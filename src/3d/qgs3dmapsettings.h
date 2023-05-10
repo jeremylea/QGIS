@@ -25,23 +25,19 @@
 
 #include "qgscoordinatereferencesystem.h"
 #include "qgsmaplayerref.h"
-#include "qgsmesh3dsymbol.h"
 #include "qgsphongmaterialsettings.h"
-#include "qgspointlightsettings.h"
-#include "qgsdirectionallightsettings.h"
 #include "qgsterraingenerator.h"
 #include "qgsvector3d.h"
+#include "qgs3daxissettings.h"
 #include "qgsskyboxsettings.h"
 #include "qgsshadowsettings.h"
-#include "qgscameracontroller.h"
 #include "qgstemporalrangeobject.h"
+#include "qgsambientocclusionsettings.h"
 
 class QgsMapLayer;
 class QgsRasterLayer;
-
+class QgsLightSource;
 class QgsAbstract3DRenderer;
-
-
 class QgsReadWriteContext;
 class QgsProject;
 
@@ -71,6 +67,22 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
     QDomElement writeXml( QDomDocument &doc, const QgsReadWriteContext &context ) const;
     //! Resolves references to other objects (map layers) after the call to readXml()
     void resolveReferences( const QgsProject &project );
+
+    /**
+     * Returns the 3D scene's 2D extent in project's CRS
+     * \since QGIS 3.30
+     */
+    QgsRectangle extent() const { return mExtent; }
+
+    /**
+     * Sets the 3D scene's 2D \a extent in project's CRS, while also setting the scene's origin to the extent's center
+     * This needs to be called during initialization, as terrain will only be generated
+     * within this extent and layer 3D data will only be loaded within this extent too.
+     *
+     * \see setOrigin()
+     * \since QGIS 3.30
+     */
+    void setExtent( const QgsRectangle &extent );
 
     /**
      * Sets coordinates in map CRS at which our 3D world has origin (0,0,0)
@@ -251,7 +263,7 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
     float terrainElevationOffset() const { return mTerrainElevationOffset; }
 
     /**
-     * Sets terrain generator.
+     * Sets terrain generator and sets extent() as the generator's extent.
      *
      * It takes care of producing terrain tiles from the input data.
      * Takes ownership of the generator.
@@ -260,6 +272,7 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
      *
      * \see terrainGenerator()
      * \see setTerrainRenderingEnabled()
+     * \see setExtent()
      */
     void setTerrainGenerator( QgsTerrainGenerator *gen SIP_TRANSFER ) SIP_SKIP;
 
@@ -325,11 +338,6 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
     //
     // misc configuration
     //
-
-    //! Sets list of extra 3D renderers to use in the scene. Takes ownership of the objects.
-    void setRenderers( const QList<QgsAbstract3DRenderer *> &renderers SIP_TRANSFER );
-    //! Returns list of extra 3D renderers
-    QList<QgsAbstract3DRenderer *> renderers() const { return mRenderers; }
 
     //! Sets whether to display bounding boxes of terrain tiles (for debugging)
     void setShowTerrainBoundingBoxes( bool enabled );
@@ -481,13 +489,13 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
      * Returns the navigation mode used by the camera
      * \since QGIS 3.18
      */
-    QgsCameraController::NavigationMode cameraNavigationMode() const { return mCameraNavigationMode; }
+    Qgis::NavigationMode cameraNavigationMode() const { return mCameraNavigationMode; }
 
     /**
      * Sets the navigation mode for the camera
      * \since QGIS 3.18
      */
-    void setCameraNavigationMode( QgsCameraController::NavigationMode navigationMode );
+    void setCameraNavigationMode( Qgis::NavigationMode navigationMode );
 #endif
 
     /**
@@ -530,6 +538,12 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
     QgsShadowSettings shadowSettings() const SIP_SKIP { return mShadowSettings; }
 
     /**
+     * Returns the current configuration of screen space ambient occlusion
+     * \since QGIS 3.28
+     */
+    QgsAmbientOcclusionSettings ambientOcclusionSettings() const SIP_SKIP { return mAmbientOcclusionSettings; }
+
+    /**
      * Sets the current configuration of the skybox
      * \since QGIS 3.16
      */
@@ -540,6 +554,12 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
      * \since QGIS 3.16
      */
     void setShadowSettings( const QgsShadowSettings &shadowSettings ) SIP_SKIP;
+
+    /**
+     * Sets the current configuration of screen space ambient occlusion
+     * \since QGIS 3.28
+     */
+    void setAmbientOcclusionSettings( const QgsAmbientOcclusionSettings &ambientOcclusionSettings ) SIP_SKIP;
 
     /**
      * Returns whether the skybox is enabled.
@@ -626,6 +646,48 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
      * \since QGIS 3.26
      */
     void setViewFrustumVisualizationEnabled( bool enabled );
+
+    /**
+     * Returns the current configuration of 3d axis
+     * \return QGIS 3.26
+     */
+    Qgs3DAxisSettings get3DAxisSettings() const SIP_SKIP { return m3dAxisSettings; }
+
+    /**
+     * Sets the current configuration of 3d axis
+     * \since QGIS 3.26
+     */
+    void set3DAxisSettings( const Qgs3DAxisSettings &axisSettings, bool force = false ) SIP_SKIP;
+
+    /**
+     * Returns whether debug overlay is enabled
+     * \see setIsDebugOverlayEnabled()
+     * \since QGIS 3.26
+     */
+    bool isDebugOverlayEnabled() const { return mIsDebugOverlayEnabled; }
+
+    /**
+     * Sets whether debug overlay is enabled
+     * The debug overlay displays some debugging and profiling information.
+     * It has been introduced in Qt version 5.15.
+     * This parameter is transient. It is not saved in the project parameters.
+     * \see isDebugOverlayEnabled()
+     * \since QGIS 3.26
+     */
+    void setIsDebugOverlayEnabled( bool debugOverlayEnabled );
+
+    /**
+     * Returns whether the extent is displayed on the main 2D map canvas
+     * \see setShowExtentIn2DView()
+     * \since QGIS 3.32
+     */
+    bool showExtentIn2DView() const { return mShowExtentIn2DView; }
+
+    /**
+     * Sets whether the extent is displayed on the main 2D map canvas
+     * \since QGIS 3.32
+     */
+    void setShowExtentIn2DView( bool show );
 
   signals:
 
@@ -794,6 +856,13 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
      */
     void shadowSettingsChanged();
 
+
+    /**
+     * Emitted when ambient occlusion rendering settings are changed
+     * \since QGIS 3.28
+     */
+    void ambientOcclusionSettingsChanged();
+
     /**
      * Emitted when the FPS counter is enabled or disabled
      * \since QGIS 3.18
@@ -806,6 +875,32 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
      * \since QGIS 3.26
      */
     void viewFrustumVisualizationEnabledChanged();
+
+    /**
+     * Emitted when 3d axis rendering settings are changed
+     * \since QGIS 3.26
+     */
+    void axisSettingsChanged();
+
+    /**
+     * Emitted when the debug overaly is enabled or disabled
+     * \since QGIS 3.26
+     */
+    void debugOverlayEnabledChanged( bool debugOverlayEnabled );
+
+    /**
+     * Emitted when the 3d view's 2d extent has changed
+     * \see setExtent()
+     * \since QGIS 3.30
+     */
+    void extentChanged();
+
+    /**
+     * Emitted when the parameter to display 3d view's extent in the 2D canvas has changed
+     * \see setShowExtentIn2DView()
+     * \since QGIS 3.32
+     */
+    void showExtentIn2DViewChanged();
 
   private:
 #ifdef SIP_RUN
@@ -840,10 +935,9 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
     QList< QgsLightSource * > mLightSources; //!< List of light sources in the scene (owned by the settings)
     float mFieldOfView = 45.0f; //<! Camera lens field of view value
     Qt3DRender::QCameraLens::ProjectionType mProjectionType = Qt3DRender::QCameraLens::PerspectiveProjection;  //<! Camera lens projection type
-    QgsCameraController::NavigationMode mCameraNavigationMode = QgsCameraController::NavigationMode::TerrainBasedNavigation;
+    Qgis::NavigationMode mCameraNavigationMode = Qgis::NavigationMode::TerrainBased;
     double mCameraMovementSpeed = 5.0;
     QList<QgsMapLayerRef> mLayers;   //!< Layers to be rendered
-    QList<QgsAbstract3DRenderer *> mRenderers;  //!< Extra stuff to render as 3D object
     //! Coordinate transform context
     QgsCoordinateTransformContext mTransformContext;
     QgsPathResolver mPathResolver;
@@ -854,6 +948,7 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
     bool mIsSkyboxEnabled = false;  //!< Whether the skybox is enabled
     QgsSkyboxSettings mSkyboxSettings; //!< Skybox related configuration
     QgsShadowSettings mShadowSettings; //!< Shadow rendering related settings
+    QgsAmbientOcclusionSettings mAmbientOcclusionSettings; //!< Screen Space Ambient Occlusion related settings
 
     bool mEyeDomeLightingEnabled = false;
     double mEyeDomeLightingStrength = 1000.0;
@@ -873,6 +968,15 @@ class _3D_EXPORT Qgs3DMapSettings : public QObject, public QgsTemporalRangeObjec
     bool mTerrainRenderingEnabled = true;
 
     Qgis::RendererUsage mRendererUsage;
+
+    Qgs3DAxisSettings m3dAxisSettings; //!< 3d axis related configuration
+
+    bool mIsDebugOverlayEnabled = false;
+
+    QgsRectangle mExtent; //!< 2d extent used to limit the 3d view
+
+    bool mShowExtentIn2DView = false;
+
 };
 
 

@@ -103,7 +103,7 @@ QString QgsRasterLayerElevationProperties::htmlSummary() const
   properties << tr( "Elevation band: %1" ).arg( mBandNumber );
   properties << tr( "Scale: %1" ).arg( mZScale );
   properties << tr( "Offset: %1" ).arg( mZOffset );
-  return QStringLiteral( "<li>%1</li>" ).arg( properties.join( QStringLiteral( "</li><li>" ) ) );
+  return QStringLiteral( "<li>%1</li>" ).arg( properties.join( QLatin1String( "</li><li>" ) ) );
 }
 
 bool QgsRasterLayerElevationProperties::isVisibleInZRange( const QgsDoubleRange & ) const
@@ -152,7 +152,7 @@ void QgsRasterLayerElevationProperties::setProfileLineSymbol( QgsLineSymbol *sym
 {
   mProfileLineSymbol.reset( symbol );
   emit changed();
-  emit renderingPropertyChanged();
+  emit profileRenderingPropertyChanged();
 }
 
 QgsFillSymbol *QgsRasterLayerElevationProperties::profileFillSymbol() const

@@ -16,14 +16,10 @@
  ***************************************************************************/
 
 #include "qgspostgresconn.h"
-#include "qgsauthmanager.h"
 #include "qgslogger.h"
 #include "qgsdatasourceuri.h"
 #include "qgsmessagelog.h"
 #include "qgscredentials.h"
-#include "qgsfields.h"
-#include "qgspgtablemodel.h"
-#include "qgsproviderregistry.h"
 #include "qgsvectordataprovider.h"
 #include "qgswkbtypes.h"
 #include "qgssettings.h"
@@ -32,10 +28,12 @@
 #include "qgspostgresconnpool.h"
 #include "qgsvariantutils.h"
 #include "qgsdbquerylog.h"
+#include "qgsapplication.h"
 
 #include <QApplication>
 #include <QStringList>
 #include <QThread>
+#include <QFile>
 
 #include <climits>
 
@@ -258,6 +256,42 @@ QgsPostgresConn *QgsPostgresConn::connectDb( const QString &conninfo, bool reado
   return conn;
 }
 
+QgsPostgresConn *QgsPostgresConn::connectDb( const QgsDataSourceUri &uri, bool readonly, bool shared, bool transaction )
+{
+  QgsPostgresConn *conn = QgsPostgresConn::connectDb( uri.connectionInfo( false ), readonly, shared, transaction );
+  if ( !conn )
+  {
+    return conn;
+  }
+
+  const QString sessionRoleKey = QStringLiteral( "session_role" );
+  if ( uri.hasParam( sessionRoleKey ) )
+  {
+    const QString sessionRole = uri.param( sessionRoleKey );
+    if ( !sessionRole.isEmpty() )
+    {
+      if ( !conn->setSessionRole( sessionRole ) )
+      {
+        QgsDebugMsgLevel(
+          QStringLiteral(
+            "Set session role failed for ROLE %1"
+          )
+          .arg( quotedValue( sessionRole ) )
+          ,
+          2
+        );
+        conn->unref();
+        return nullptr;
+      }
+    }
+  }
+  else
+  {
+    conn->resetSessionRole();
+  }
+  return conn;
+}
+
 static void noticeProcessor( void *arg, const char *message )
 {
   Q_UNUSED( arg )
@@ -413,8 +447,11 @@ QgsPostgresConn::QgsPostgresConn( const QString &conninfo, bool readOnly, bool s
 
   if ( mPostgresqlVersion >= 90000 )
   {
-    LoggedPQexecNR( "QgsPostgresConn", QStringLiteral( "SET application_name='QGIS'" ) );
-    LoggedPQexecNR( "QgsPostgresConn", QStringLiteral( "SET extra_float_digits=3" ) );
+    // Quoting floating point values and application name for PostgreSQL connection in 1 request
+    LoggedPQexecNR(
+      "QgsPostgresConn",
+      QStringLiteral( "SET extra_float_digits=3; SET application_name=%1; SET datestyle='ISO'" ).arg( quotedValue( QgsApplication::applicationFullName() ) )
+    );
   }
 
   PQsetNoticeProcessor( mConn, noticeProcessor, nullptr );
@@ -660,6 +697,12 @@ bool QgsPostgresConn::getTableInfo( bool searchGeometryColumnsOnly, bool searchP
   result = LoggedPQexec( "QgsPostgresConn", query );
   // NOTE: we intentionally continue if the query fails
   //       (for example because PostGIS is not installed)
+
+  if ( ! result.result() )
+  {
+    return false;
+  }
+
   for ( int idx = 0; idx < result.PQntuples(); idx++ )
   {
     QString tableName = result.PQgetvalue( idx, 0 );
@@ -669,9 +712,6 @@ bool QgsPostgresConn::getTableInfo( bool searchGeometryColumnsOnly, bool searchP
     QString ssrid = result.PQgetvalue( idx, 4 );
     int dim = result.PQgetvalue( idx, 5 ).toInt();
     QString relkind = result.PQgetvalue( idx, 6 );
-    bool isView = relkind == QLatin1String( "v" ) || relkind == QLatin1String( "m" );
-    bool isMaterializedView = relkind == QLatin1String( "m" );
-    bool isForeignTable = relkind == QLatin1String( "f" );
     bool isRaster = type == QLatin1String( "RASTER" );
     QString comment = result.PQgetvalue( idx, 7 );
     QString attributes = result.PQgetvalue( idx, 8 );
@@ -722,17 +762,16 @@ bool QgsPostgresConn::getTableInfo( bool searchGeometryColumnsOnly, bool searchP
       type += QLatin1Char( 'Z' );
     else if ( dim == 4 )
       type += QLatin1String( "ZM" );
-    layerProperty.types = QList<QgsWkbTypes::Type>() << ( QgsPostgresConn::wkbTypeFromPostgis( type ) );
+    layerProperty.types = QList<Qgis::WkbType>() << ( QgsPostgresConn::wkbTypeFromPostgis( type ) );
     layerProperty.srids = QList<int>() << srid;
     layerProperty.sql.clear();
-    layerProperty.relKind = relkind;
-    layerProperty.isView = isView;
-    layerProperty.isForeignTable = isForeignTable;
+    layerProperty.relKind = relKindFromValue( relkind );
     layerProperty.isRaster = isRaster;
-    layerProperty.isMaterializedView = isMaterializedView;
     layerProperty.tableComment = comment;
     layerProperty.nSpCols = nSpCols;
-    if ( isView || isForeignTable )
+    if ( ( layerProperty.relKind == Qgis::PostgresRelKind::View )
+         || ( layerProperty.relKind == Qgis::PostgresRelKind::MaterializedView )
+         || ( layerProperty.relKind == Qgis::PostgresRelKind::ForeignTable ) )
     {
       // TODO: use std::transform
       for ( const auto &a : QgsPostgresStringUtils::parseArray( attributes ) )
@@ -741,7 +780,8 @@ bool QgsPostgresConn::getTableInfo( bool searchGeometryColumnsOnly, bool searchP
       }
     }
 
-    if ( isView && layerProperty.pkCols.empty() )
+    if ( ( layerProperty.relKind == Qgis::PostgresRelKind::View
+           || layerProperty.relKind == Qgis::PostgresRelKind::MaterializedView ) && layerProperty.pkCols.empty() )
     {
       //QgsDebugMsgLevel( QStringLiteral( "no key columns found." ), 2 );
       continue;
@@ -835,22 +875,16 @@ bool QgsPostgresConn::getTableInfo( bool searchGeometryColumnsOnly, bool searchP
       QString column     = result.PQgetvalue( i, 2 ); // attname
       QString relkind    = result.PQgetvalue( i, 3 ); // relation kind
       QString coltype    = result.PQgetvalue( i, 4 ); // column type
-      bool isView = relkind == QLatin1String( "v" ) || relkind == QLatin1String( "m" );
-      bool isMaterializedView = relkind == QLatin1String( "m" );
-      bool isForeignTable = relkind == QLatin1String( "f" );
       QString comment    = result.PQgetvalue( i, 5 ); // table comment
 
       QgsPostgresLayerProperty layerProperty;
-      layerProperty.types = QList<QgsWkbTypes::Type>() << QgsWkbTypes::Unknown;
+      layerProperty.types = QList<Qgis::WkbType>() << Qgis::WkbType::Unknown;
       layerProperty.srids = QList<int>() << std::numeric_limits<int>::min();
       layerProperty.schemaName = schemaName;
       layerProperty.tableName = tableName;
       layerProperty.geometryColName = column;
-      layerProperty.relKind = relkind;
-      layerProperty.isView = isView;
-      layerProperty.isForeignTable = isForeignTable;
+      layerProperty.relKind = relKindFromValue( relkind );
       layerProperty.isRaster = coltype == QLatin1String( "raster" );
-      layerProperty.isMaterializedView = isMaterializedView;
       layerProperty.tableComment = comment;
       if ( coltype == QLatin1String( "geometry" ) )
       {
@@ -880,9 +914,13 @@ bool QgsPostgresConn::getTableInfo( bool searchGeometryColumnsOnly, bool searchP
 
       // TODO: use knowledge from already executed query to count
       //       spatial fields and list attribute names...
-      addColumnInfo( layerProperty, schemaName, tableName, isView || isForeignTable );
+      addColumnInfo( layerProperty, schemaName, tableName,
+                     layerProperty.relKind == Qgis::PostgresRelKind::View
+                     || layerProperty.relKind == Qgis::PostgresRelKind::MaterializedView
+                     || layerProperty.relKind == Qgis::PostgresRelKind::ForeignTable );
 
-      if ( isView && layerProperty.pkCols.empty() )
+      if ( ( layerProperty.relKind == Qgis::PostgresRelKind::View
+             || layerProperty.relKind == Qgis::PostgresRelKind::MaterializedView ) && layerProperty.pkCols.empty() )
       {
         //QgsDebugMsgLevel( QStringLiteral( "no key columns found." ), 2 );
         continue;
@@ -942,23 +980,17 @@ bool QgsPostgresConn::getTableInfo( bool searchGeometryColumnsOnly, bool searchP
       QString relkind = result.PQgetvalue( i, 2 ); // relation kind
       QString comment = result.PQgetvalue( i, 3 ); // table comment
       QString attributes = result.PQgetvalue( i, 4 ); // attributes array
-      bool isView = relkind == QLatin1String( "v" ) || relkind == QLatin1String( "m" );
-      bool isMaterializedView = relkind == QLatin1String( "m" );
-      bool isForeignTable = relkind == QLatin1String( "f" );
 
       QgsPostgresLayerProperty layerProperty;
-      layerProperty.types = QList<QgsWkbTypes::Type>() << QgsWkbTypes::NoGeometry;
+      layerProperty.types = QList<Qgis::WkbType>() << Qgis::WkbType::NoGeometry;
       layerProperty.srids = QList<int>() << std::numeric_limits<int>::min();
       layerProperty.schemaName = schema;
       layerProperty.tableName = table;
       layerProperty.geometryColName = QString();
       layerProperty.geometryColType = SctNone;
       layerProperty.nSpCols = 0;
-      layerProperty.relKind = relkind;
-      layerProperty.isView = isView;
-      layerProperty.isForeignTable = isForeignTable;
+      layerProperty.relKind = relKindFromValue( relkind );
       layerProperty.isRaster = false;
-      layerProperty.isMaterializedView = isMaterializedView;
       layerProperty.tableComment = comment;
 
       //check if we've already added this layer in some form
@@ -976,7 +1008,9 @@ bool QgsPostgresConn::getTableInfo( bool searchGeometryColumnsOnly, bool searchP
       if ( alreadyFound )
         continue;
 
-      if ( isView || isForeignTable )
+      if ( layerProperty.relKind == Qgis::PostgresRelKind::View
+           || layerProperty.relKind == Qgis::PostgresRelKind::MaterializedView
+           || layerProperty.relKind == Qgis::PostgresRelKind::ForeignTable )
       {
         // TODO: use std::transform
         for ( const auto &a : QgsPostgresStringUtils::parseArray( attributes ) )
@@ -1099,17 +1133,10 @@ QString QgsPostgresConn::postgisVersion() const
 
   QgsDebugMsgLevel( "PostGIS version info: " + mPostgisVersionInfo, 2 );
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 14, 0)
-  QStringList postgisParts = mPostgisVersionInfo.split( ' ', QString::SkipEmptyParts );
-
-  // Get major and minor version
-  QStringList postgisVersionParts = postgisParts[0].split( '.', QString::SkipEmptyParts );
-#else
   QStringList postgisParts = mPostgisVersionInfo.split( ' ', Qt::SkipEmptyParts );
 
   // Get major and minor version
   QStringList postgisVersionParts = postgisParts[0].split( '.', Qt::SkipEmptyParts );
-#endif
   if ( postgisVersionParts.size() < 2 )
   {
     QgsMessageLog::logMessage( tr( "Could not parse postgis version string '%1'" ).arg( mPostgisVersionInfo ), tr( "PostGIS" ) );
@@ -1220,6 +1247,19 @@ QString QgsPostgresConn::postgisVersion() const
   return mPostgisVersionInfo;
 }
 
+/* Functions for determining available features in postGIS */
+bool QgsPostgresConn::setSessionRole( const QString &sessionRole )
+{
+  if ( !sessionRole.isEmpty() )
+    return LoggedPQexecNR( "QgsPostgresConn", QStringLiteral( "SET ROLE %1" ).arg( quotedValue( sessionRole ) ) );
+  else
+    return resetSessionRole();
+}
+bool QgsPostgresConn::resetSessionRole()
+{
+  return LoggedPQexecNR( "QgsPostgresConn", QStringLiteral( "RESET ROLE" ) );
+}
+
 QString QgsPostgresConn::quotedIdentifier( const QString &ident )
 {
   QString result = ident;
@@ -1283,7 +1323,7 @@ static QString quotedList( const QVariantList &list )
 
 QString QgsPostgresConn::quotedValue( const QVariant &value )
 {
-  if ( value.isNull() )
+  if ( QgsVariantUtils::isNull( value ) )
     return QStringLiteral( "NULL" );
 
   switch ( value.type() )
@@ -1314,7 +1354,7 @@ QString QgsPostgresConn::quotedValue( const QVariant &value )
 
 QString QgsPostgresConn::quotedJsonValue( const QVariant &value )
 {
-  if ( value.isNull() || !value.isValid() )
+  if ( QgsVariantUtils::isNull( value ) )
     return QStringLiteral( "null" );
   // where json is a string literal just construct it from that rather than dump
   if ( value.type() == QVariant::String )
@@ -1327,6 +1367,48 @@ QString QgsPostgresConn::quotedJsonValue( const QVariant &value )
   }
   const auto j = QgsJsonUtils::jsonFromVariant( value );
   return quotedString( QString::fromStdString( j.dump() ) );
+}
+
+Qgis::PostgresRelKind QgsPostgresConn::relKindFromValue( const QString &value )
+{
+  if ( value == 'r' )
+  {
+    return Qgis::PostgresRelKind::OrdinaryTable;
+  }
+  else if ( value == 'i' )
+  {
+    return Qgis::PostgresRelKind::Index;
+  }
+  else if ( value == 's' )
+  {
+    return Qgis::PostgresRelKind::Sequence;
+  }
+  else if ( value == 'v' )
+  {
+    return Qgis::PostgresRelKind::View;
+  }
+  else if ( value == 'm' )
+  {
+    return Qgis::PostgresRelKind::MaterializedView;
+  }
+  else if ( value == 'c' )
+  {
+    return Qgis::PostgresRelKind::CompositeType;
+  }
+  else if ( value == 't' )
+  {
+    return Qgis::PostgresRelKind::ToastTable;
+  }
+  else if ( value == 'f' )
+  {
+    return Qgis::PostgresRelKind::ForeignTable;
+  }
+  else if ( value == 'p' )
+  {
+    return Qgis::PostgresRelKind::PartitionedTable;
+  }
+
+  return Qgis::PostgresRelKind::Unknown;
 }
 
 PGresult *QgsPostgresConn::PQexec( const QString &query, bool logError, bool retry, const QString &originatorClass, const QString &queryOrigin ) const
@@ -1522,14 +1604,25 @@ PGresult *QgsPostgresConn::PQgetResult()
   return ::PQgetResult( mConn );
 }
 
-PGresult *QgsPostgresConn::PQprepare( const QString &stmtName, const QString &query, int nParams, const Oid *paramTypes )
+PGresult *QgsPostgresConn::PQprepare( const QString &stmtName, const QString &query, int nParams, const Oid *paramTypes, const QString &originatorClass, const QString &queryOrigin )
 {
   QMutexLocker locker( &mLock );
 
-  return ::PQprepare( mConn, stmtName.toUtf8(), query.toUtf8(), nParams, paramTypes );
+  std::unique_ptr<QgsDatabaseQueryLogWrapper> logWrapper = std::make_unique<QgsDatabaseQueryLogWrapper>( QStringLiteral( "PQprepare(%1): %2 " ).arg( stmtName, query ), mConnInfo, QStringLiteral( "postgres" ), originatorClass, queryOrigin );
+
+  PGresult *res { ::PQprepare( mConn, stmtName.toUtf8(), query.toUtf8(), nParams, paramTypes ) };
+
+  const int errorStatus = PQresultStatus( res );
+
+  if ( errorStatus != PGRES_TUPLES_OK )
+  {
+    logWrapper->setError( PQresultErrorMessage( res ) );
+  }
+
+  return res;
 }
 
-PGresult *QgsPostgresConn::PQexecPrepared( const QString &stmtName, const QStringList &params )
+PGresult *QgsPostgresConn::PQexecPrepared( const QString &stmtName, const QStringList &params, const QString &originatorClass, const QString &queryOrigin )
 {
   QMutexLocker locker( &mLock );
 
@@ -1547,7 +1640,16 @@ PGresult *QgsPostgresConn::PQexecPrepared( const QString &stmtName, const QStrin
       param[i] = qparam[i];
   }
 
-  PGresult *res = ::PQexecPrepared( mConn, stmtName.toUtf8(), params.size(), param, nullptr, nullptr, 0 );
+  std::unique_ptr<QgsDatabaseQueryLogWrapper> logWrapper = std::make_unique<QgsDatabaseQueryLogWrapper>( QStringLiteral( "PQexecPrepared(%1)" ).arg( stmtName ), mConnInfo, QStringLiteral( "postgres" ), originatorClass, queryOrigin );
+
+  PGresult *res { ::PQexecPrepared( mConn, stmtName.toUtf8(), params.size(), param, nullptr, nullptr, 0 ) };
+
+  const int errorStatus = PQresultStatus( res );
+
+  if ( errorStatus != PGRES_TUPLES_OK && errorStatus != PGRES_COMMAND_OK )
+  {
+    logWrapper->setError( PQresultErrorMessage( res ) );
+  }
 
   delete [] param;
 
@@ -1847,7 +1949,9 @@ void QgsPostgresConn::deduceEndian()
   // return data in the endian of the server
 
   QgsPostgresResult resOID;
+#ifdef QGISDEBUG
   int queryCounter = 0;
+#endif
   int errorCounter = 0;
   int oidStatus = 0;
   int oidSelectSet = 1 << 0;
@@ -1872,7 +1976,9 @@ void QgsPostgresConn::deduceEndian()
     if ( resOID.result() == nullptr )
       break;
 
+#ifdef QGISDEBUG
     queryCounter++;
+#endif
     if ( resOID.PQresultStatus() == PGRES_FATAL_ERROR )
     {
       errorCounter++;
@@ -2058,8 +2164,8 @@ void QgsPostgresConn::retrieveLayerTypes( QVector<QgsPostgresLayerProperty *> &l
 
       sql += " || ':' || ";
 
-      QgsWkbTypes::Type type = layerProperty.types.value( 0, QgsWkbTypes::Unknown );
-      if ( type == QgsWkbTypes::Unknown )
+      Qgis::WkbType type = layerProperty.types.value( 0, Qgis::WkbType::Unknown );
+      if ( type == Qgis::WkbType::Unknown )
       {
         // Note that we would like to apply a "LIMIT GEOM_TYPE_SELECT_LIMIT"
         // here, so that the previous "array_agg(DISTINCT" does not scan the
@@ -2079,7 +2185,7 @@ void QgsPostgresConn::retrieveLayerTypes( QVector<QgsPostgresLayerProperty *> &l
 
       sql += QLatin1String( ") " );
 
-      if ( type == QgsWkbTypes::Unknown )
+      if ( type == Qgis::WkbType::Unknown )
       {
         // Subselect to limit the "array_agg(DISTINCT", see previous comment.
         sql += QStringLiteral( " FROM (SELECT %1 FROM %2%3) AS _unused" )
@@ -2124,7 +2230,7 @@ void QgsPostgresConn::retrieveLayerTypes( QVector<QgsPostgresLayerProperty *> &l
                     );
 
     /* Gather found types */
-    QList< std::pair<QgsWkbTypes::Type, int> > foundCombinations;
+    QList< std::pair<Qgis::WkbType, int> > foundCombinations;
     for ( const auto &sridAndTypeVariant : srids_and_types )
     {
       QString sridAndTypeString = sridAndTypeVariant.toString();
@@ -2203,7 +2309,7 @@ void QgsPostgresConn::retrieveLayerTypes( QVector<QgsPostgresLayerProperty *> &l
                             .arg( layerProperty.schemaName,
                                   layerProperty.tableName,
                                   layerProperty.geometryColName )
-                            .arg( multiCurveType ), 3
+                            .arg( qgsEnumValueToKey( multiCurveType ) ), 3
                           );
           foundCombinations[j].first = multiCurveType;
           break;
@@ -2217,7 +2323,7 @@ void QgsPostgresConn::retrieveLayerTypes( QVector<QgsPostgresLayerProperty *> &l
                             .arg( layerProperty.schemaName,
                                   layerProperty.tableName,
                                   layerProperty.geometryColName )
-                            .arg( multiType ), 3
+                            .arg( qgsEnumValueToKey( multiType ) ), 3
                           );
           foundCombinations[j].first = multiType;
           break;
@@ -2231,7 +2337,7 @@ void QgsPostgresConn::retrieveLayerTypes( QVector<QgsPostgresLayerProperty *> &l
                             .arg( layerProperty.schemaName,
                                   layerProperty.tableName,
                                   layerProperty.geometryColName )
-                            .arg( multiType ), 3
+                            .arg( qgsEnumValueToKey( multiType ) ), 3
                           );
           foundCombinations[j].first = curveType;
           break;
@@ -2260,7 +2366,7 @@ void QgsPostgresConn::retrieveLayerTypes( QVector<QgsPostgresLayerProperty *> &l
                               layerProperty.tableName,
                               layerProperty.geometryColName )
                         .arg( srid )
-                        .arg( type ), 3
+                        .arg( qgsEnumValueToKey( type ) ), 3
                       );
 
       foundCombinations << std::make_pair( type, srid );
@@ -2301,61 +2407,61 @@ void QgsPostgresConn::retrieveLayerTypes( QVector<QgsPostgresLayerProperty *> &l
   }
 }
 
-void QgsPostgresConn::postgisWkbType( QgsWkbTypes::Type wkbType, QString &geometryType, int &dim )
+void QgsPostgresConn::postgisWkbType( Qgis::WkbType wkbType, QString &geometryType, int &dim )
 {
   dim = 2;
-  QgsWkbTypes::Type flatType = QgsWkbTypes::flatType( wkbType );
+  Qgis::WkbType flatType = QgsWkbTypes::flatType( wkbType );
   switch ( flatType )
   {
-    case QgsWkbTypes::Point:
+    case Qgis::WkbType::Point:
       geometryType = QStringLiteral( "POINT" );
       break;
 
-    case QgsWkbTypes::LineString:
+    case Qgis::WkbType::LineString:
       geometryType = QStringLiteral( "LINESTRING" );
       break;
 
-    case QgsWkbTypes::Polygon:
+    case Qgis::WkbType::Polygon:
       geometryType = QStringLiteral( "POLYGON" );
       break;
 
-    case QgsWkbTypes::MultiPoint:
+    case Qgis::WkbType::MultiPoint:
       geometryType = QStringLiteral( "MULTIPOINT" );
       break;
 
-    case QgsWkbTypes::MultiLineString:
+    case Qgis::WkbType::MultiLineString:
       geometryType = QStringLiteral( "MULTILINESTRING" );
       break;
 
-    case QgsWkbTypes::MultiPolygon:
+    case Qgis::WkbType::MultiPolygon:
       geometryType = QStringLiteral( "MULTIPOLYGON" );
       break;
 
-    case QgsWkbTypes::CircularString:
+    case Qgis::WkbType::CircularString:
       geometryType = QStringLiteral( "CIRCULARSTRING" );
       break;
 
-    case QgsWkbTypes::CompoundCurve:
+    case Qgis::WkbType::CompoundCurve:
       geometryType = QStringLiteral( "COMPOUNDCURVE" );
       break;
 
-    case QgsWkbTypes::CurvePolygon:
+    case Qgis::WkbType::CurvePolygon:
       geometryType = QStringLiteral( "CURVEPOLYGON" );
       break;
 
-    case QgsWkbTypes::MultiCurve:
+    case Qgis::WkbType::MultiCurve:
       geometryType = QStringLiteral( "MULTICURVE" );
       break;
 
-    case QgsWkbTypes::MultiSurface:
+    case Qgis::WkbType::MultiSurface:
       geometryType = QStringLiteral( "MULTISURFACE" );
       break;
 
-    case QgsWkbTypes::Unknown:
+    case Qgis::WkbType::Unknown:
       geometryType = QStringLiteral( "GEOMETRY" );
       break;
 
-    case QgsWkbTypes::NoGeometry:
+    case Qgis::WkbType::NoGeometry:
     default:
       dim = 0;
       break;
@@ -2376,13 +2482,13 @@ void QgsPostgresConn::postgisWkbType( QgsWkbTypes::Type wkbType, QString &geomet
     geometryType += QLatin1Char( 'M' );
     dim = 3;
   }
-  else if ( wkbType >= QgsWkbTypes::Point25D && wkbType <= QgsWkbTypes::MultiPolygon25D )
+  else if ( wkbType >= Qgis::WkbType::Point25D && wkbType <= Qgis::WkbType::MultiPolygon25D )
   {
     dim = 3;
   }
 }
 
-QString QgsPostgresConn::postgisWkbTypeName( QgsWkbTypes::Type wkbType )
+QString QgsPostgresConn::postgisWkbTypeName( Qgis::WkbType wkbType )
 {
   QString geometryType;
   int dim;
@@ -2392,29 +2498,29 @@ QString QgsPostgresConn::postgisWkbTypeName( QgsWkbTypes::Type wkbType )
   return geometryType;
 }
 
-QString QgsPostgresConn::postgisTypeFilter( QString geomCol, QgsWkbTypes::Type wkbType, bool castToGeometry )
+QString QgsPostgresConn::postgisTypeFilter( QString geomCol, Qgis::WkbType wkbType, bool castToGeometry )
 {
   geomCol = quotedIdentifier( geomCol );
   if ( castToGeometry )
     geomCol += QLatin1String( "::geometry" );
 
-  QgsWkbTypes::GeometryType geomType = QgsWkbTypes::geometryType( wkbType );
+  Qgis::GeometryType geomType = QgsWkbTypes::geometryType( wkbType );
   switch ( geomType )
   {
-    case QgsWkbTypes::PointGeometry:
+    case Qgis::GeometryType::Point:
       return QStringLiteral( "upper(geometrytype(%1)) IN ('POINT','POINTZ','POINTM','POINTZM','MULTIPOINT','MULTIPOINTZ','MULTIPOINTM','MULTIPOINTZM')" ).arg( geomCol );
-    case QgsWkbTypes::LineGeometry:
+    case Qgis::GeometryType::Line:
       return QStringLiteral( "upper(geometrytype(%1)) IN ('LINESTRING','LINESTRINGZ','LINESTRINGM','LINESTRINGZM','CIRCULARSTRING','CIRCULARSTRINGZ','CIRCULARSTRINGM','CIRCULARSTRINGZM','COMPOUNDCURVE','COMPOUNDCURVEZ','COMPOUNDCURVEM','COMPOUNDCURVEZM','MULTILINESTRING','MULTILINESTRINGZ','MULTILINESTRINGM','MULTILINESTRINGZM','MULTICURVE','MULTICURVEZ','MULTICURVEM','MULTICURVEZM')" ).arg( geomCol );
-    case QgsWkbTypes::PolygonGeometry:
+    case Qgis::GeometryType::Polygon:
       return QStringLiteral( "upper(geometrytype(%1)) IN ('POLYGON','POLYGONZ','POLYGONM','POLYGONZM','CURVEPOLYGON','CURVEPOLYGONZ','CURVEPOLYGONM','CURVEPOLYGONZM','MULTIPOLYGON','MULTIPOLYGONZ','MULTIPOLYGONM','MULTIPOLYGONZM','MULTIPOLYGONM','MULTISURFACE','MULTISURFACEZ','MULTISURFACEM','MULTISURFACEZM','POLYHEDRALSURFACE','TIN')" ).arg( geomCol );
-    case QgsWkbTypes::NullGeometry:
+    case Qgis::GeometryType::Null:
       return QStringLiteral( "geometrytype(%1) IS NULL" ).arg( geomCol );
     default: //unknown geometry
       return QString();
   }
 }
 
-int QgsPostgresConn::postgisWkbTypeDim( QgsWkbTypes::Type wkbType )
+int QgsPostgresConn::postgisWkbTypeDim( Qgis::WkbType wkbType )
 {
   QString geometryType;
   int dim;
@@ -2424,7 +2530,7 @@ int QgsPostgresConn::postgisWkbTypeDim( QgsWkbTypes::Type wkbType )
   return dim;
 }
 
-QgsWkbTypes::Type QgsPostgresConn::wkbTypeFromPostgis( const QString &type )
+Qgis::WkbType QgsPostgresConn::wkbTypeFromPostgis( const QString &type )
 {
   // Polyhedral surfaces and TIN are stored in PostGIS as geometry collections
   // of Polygons and Triangles.
@@ -2432,56 +2538,56 @@ QgsWkbTypes::Type QgsPostgresConn::wkbTypeFromPostgis( const QString &type )
   // we consider them as multipolygons. WKB will be converted by the feature iterator
   if ( ( type == QLatin1String( "POLYHEDRALSURFACE" ) ) || ( type == QLatin1String( "TIN" ) ) )
   {
-    return QgsWkbTypes::MultiPolygon;
+    return Qgis::WkbType::MultiPolygon;
   }
   else if ( ( type == QLatin1String( "POLYHEDRALSURFACEZ" ) ) || ( type == QLatin1String( "TINZ" ) ) )
   {
-    return QgsWkbTypes::MultiPolygonZ;
+    return Qgis::WkbType::MultiPolygonZ;
   }
   else if ( ( type == QLatin1String( "POLYHEDRALSURFACEM" ) ) || ( type == QLatin1String( "TINM" ) ) )
   {
-    return QgsWkbTypes::MultiPolygonM;
+    return Qgis::WkbType::MultiPolygonM;
   }
   else if ( ( type == QLatin1String( "POLYHEDRALSURFACEZM" ) ) || ( type == QLatin1String( "TINZM" ) ) )
   {
-    return QgsWkbTypes::MultiPolygonZM;
+    return Qgis::WkbType::MultiPolygonZM;
   }
   else if ( type == QLatin1String( "TRIANGLE" ) )
   {
-    return QgsWkbTypes::Polygon;
+    return Qgis::WkbType::Polygon;
   }
   else if ( type == QLatin1String( "TRIANGLEZ" ) )
   {
-    return QgsWkbTypes::PolygonZ;
+    return Qgis::WkbType::PolygonZ;
   }
   else if ( type == QLatin1String( "TRIANGLEM" ) )
   {
-    return QgsWkbTypes::PolygonM;
+    return Qgis::WkbType::PolygonM;
   }
   else if ( type == QLatin1String( "TRIANGLEZM" ) )
   {
-    return QgsWkbTypes::PolygonZM;
+    return Qgis::WkbType::PolygonZM;
   }
   return QgsWkbTypes::parseType( type );
 }
 
-QgsWkbTypes::Type QgsPostgresConn::wkbTypeFromOgcWkbType( unsigned int wkbType )
+Qgis::WkbType QgsPostgresConn::wkbTypeFromOgcWkbType( unsigned int wkbType )
 {
   // PolyhedralSurface => MultiPolygon
   if ( wkbType % 1000 == 15 )
-    return ( QgsWkbTypes::Type )( wkbType / 1000 * 1000 + QgsWkbTypes::MultiPolygon );
+    return ( Qgis::WkbType )( wkbType / 1000 * 1000 + static_cast< quint32>( Qgis::WkbType::MultiPolygon ) );
   // TIN => MultiPolygon
   if ( wkbType % 1000 == 16 )
-    return ( QgsWkbTypes::Type )( wkbType / 1000 * 1000 + QgsWkbTypes::MultiPolygon );
+    return ( Qgis::WkbType )( wkbType / 1000 * 1000 + static_cast< quint32>( Qgis::WkbType::MultiPolygon ) );
   // Triangle => Polygon
   if ( wkbType % 1000 == 17 )
-    return ( QgsWkbTypes::Type )( wkbType / 1000 * 1000 + QgsWkbTypes::Polygon );
-  return ( QgsWkbTypes::Type ) wkbType;
+    return ( Qgis::WkbType )( wkbType / 1000 * 1000 + static_cast< quint32>( Qgis::WkbType::Polygon ) );
+  return ( Qgis::WkbType ) wkbType;
 }
 
-QString QgsPostgresConn::displayStringForWkbType( QgsWkbTypes::Type type )
+QString QgsPostgresConn::displayStringForWkbType( Qgis::WkbType type )
 {
-  return QgsWkbTypes::displayString( QgsWkbTypes::Type( type ) );
+  return QgsWkbTypes::displayString( type );
 }
 
 QString QgsPostgresConn::displayStringForGeomType( QgsPostgresGeometryColumnType type )
@@ -2506,24 +2612,24 @@ QString QgsPostgresConn::displayStringForGeomType( QgsPostgresGeometryColumnType
   return QString();
 }
 
-QgsWkbTypes::Type QgsPostgresConn::wkbTypeFromGeomType( QgsWkbTypes::GeometryType geomType )
+Qgis::WkbType QgsPostgresConn::wkbTypeFromGeomType( Qgis::GeometryType geomType )
 {
   switch ( geomType )
   {
-    case QgsWkbTypes::PointGeometry:
-      return QgsWkbTypes::Point;
-    case QgsWkbTypes::LineGeometry:
-      return QgsWkbTypes::LineString;
-    case QgsWkbTypes::PolygonGeometry:
-      return QgsWkbTypes::Polygon;
-    case QgsWkbTypes::NullGeometry:
-      return QgsWkbTypes::NoGeometry;
-    case QgsWkbTypes::UnknownGeometry:
-      return QgsWkbTypes::Unknown;
+    case Qgis::GeometryType::Point:
+      return Qgis::WkbType::Point;
+    case Qgis::GeometryType::Line:
+      return Qgis::WkbType::LineString;
+    case Qgis::GeometryType::Polygon:
+      return Qgis::WkbType::Polygon;
+    case Qgis::GeometryType::Null:
+      return Qgis::WkbType::NoGeometry;
+    case Qgis::GeometryType::Unknown:
+      return Qgis::WkbType::Unknown;
   }
 
   Q_ASSERT( !"unexpected geomType" );
-  return QgsWkbTypes::Unknown;
+  return Qgis::WkbType::Unknown;
 }
 
 QStringList QgsPostgresConn::connectionList()
@@ -2668,6 +2774,12 @@ void QgsPostgresConn::deleteConnection( const QString &connName )
   settings.remove( key );
 }
 
+bool QgsPostgresConn::allowMetadataInDatabase( const QString &connName )
+{
+  QgsSettings settings;
+  return settings.value( "/PostgreSQL/connections/" + connName + "/metadataInDatabase", false ).toBool();
+}
+
 bool QgsPostgresConn::cancel()
 {
   QMutexLocker locker( &mLock );
@@ -2706,4 +2818,66 @@ QString QgsPostgresConn::currentDatabase() const
   }
 
   return database;
+}
+
+QgsCoordinateReferenceSystem QgsPostgresConn::sridToCrs( int srid )
+{
+  QgsCoordinateReferenceSystem crs;
+
+  QMutexLocker locker( &mCrsCacheMutex );
+  if ( mCrsCache.contains( srid ) )
+    crs = mCrsCache.value( srid );
+  else
+  {
+    QgsPostgresResult result( LoggedPQexec( QStringLiteral( "QgsPostgresProvider" ), QStringLiteral( "SELECT auth_name, auth_srid, srtext, proj4text FROM spatial_ref_sys WHERE srid=%1" ).arg( srid ) ) );
+    if ( result.PQresultStatus() == PGRES_TUPLES_OK )
+    {
+      if ( result.PQntuples() > 0 )
+      {
+        const QString authName = result.PQgetvalue( 0, 0 );
+        const QString authSRID = result.PQgetvalue( 0, 1 );
+        const QString srText = result.PQgetvalue( 0, 2 );
+        bool ok = false;
+        if ( authName == QLatin1String( "EPSG" ) || authName == QLatin1String( "ESRI" ) )
+        {
+          ok = crs.createFromUserInput( authName + ':' + authSRID );
+        }
+        if ( !ok && !srText.isEmpty() )
+        {
+          ok = crs.createFromUserInput( srText );
+        }
+        if ( !ok )
+          crs = QgsCoordinateReferenceSystem::fromProj( result.PQgetvalue( 0, 3 ) );
+      }
+      mCrsCache.insert( srid, crs );
+    }
+  }
+  return crs;
+}
+
+int QgsPostgresConn::crsToSrid( const QgsCoordinateReferenceSystem &crs )
+{
+  QMutexLocker locker( &mCrsCacheMutex );
+  int srid = mCrsCache.key( crs );
+
+  if ( srid > -1 )
+    return srid;
+  else
+  {
+    QStringList authParts = crs.authid().split( ':' );
+    if ( authParts.size() != 2 )
+      return -1;
+    const QString authName = authParts.first();
+    const QString authId = authParts.last();
+    QgsPostgresResult result( PQexec( QStringLiteral( "SELECT srid FROM spatial_ref_sys WHERE auth_name='%1' AND auth_srid=%2" ).arg( authName, authId ) ) );
+
+    if ( result.PQresultStatus() == PGRES_TUPLES_OK )
+    {
+      int srid = result.PQgetvalue( 0, 0 ).toInt();
+      mCrsCache.insert( srid, crs );
+      return srid;
+    }
+  }
+
+  return -1;
 }

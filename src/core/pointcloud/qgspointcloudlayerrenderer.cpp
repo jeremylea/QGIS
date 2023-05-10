@@ -22,8 +22,8 @@
 #include "qgspointcloudlayer.h"
 #include "qgsrendercontext.h"
 #include "qgspointcloudindex.h"
-#include "qgsstyle.h"
 #include "qgscolorramp.h"
+#include "qgselevationmap.h"
 #include "qgspointcloudrequest.h"
 #include "qgspointcloudattribute.h"
 #include "qgspointcloudrenderer.h"
@@ -31,7 +31,6 @@
 #include "qgslogger.h"
 #include "qgspointcloudlayerelevationproperties.h"
 #include "qgsmessagelog.h"
-#include "qgscircle.h"
 #include "qgsmapclippingutils.h"
 #include "qgspointcloudblockrequest.h"
 
@@ -39,6 +38,7 @@ QgsPointCloudLayerRenderer::QgsPointCloudLayerRenderer( QgsPointCloudLayer *laye
   : QgsMapLayerRenderer( layer->id(), &context )
   , mLayer( layer )
   , mLayerAttributes( layer->attributes() )
+  , mSubIndexes( layer && layer->dataProvider() ? layer->dataProvider()->subIndexes() : QVector<QgsPointCloudSubIndex>() )
   , mFeedback( new QgsFeedback )
 {
   // TODO: we must not keep pointer to mLayer (it's dangerous) - we must copy anything we need for rendering
@@ -47,6 +47,8 @@ QgsPointCloudLayerRenderer::QgsPointCloudLayerRenderer( QgsPointCloudLayer *laye
     return;
 
   mRenderer.reset( mLayer->renderer()->clone() );
+  if ( !mSubIndexes.isEmpty() )
+    mSubIndexExtentRenderer.reset( new QgsPointCloudExtentRenderer() );
 
   if ( mLayer->dataProvider()->index() )
   {
@@ -80,7 +82,7 @@ bool QgsPointCloudLayerRenderer::render()
   if ( !mClippingRegions.empty() )
   {
     bool needsPainterClipPath = false;
-    const QPainterPath path = QgsMapClippingUtils::calculatePainterClipRegion( mClippingRegions, *renderContext(), QgsMapLayerType::VectorTileLayer, needsPainterClipPath );
+    const QPainterPath path = QgsMapClippingUtils::calculatePainterClipRegion( mClippingRegions, *renderContext(), Qgis::LayerType::VectorTile, needsPainterClipPath );
     if ( needsPainterClipPath )
       renderContext()->painter()->setClipPath( path, Qt::IntersectClip );
   }
@@ -97,7 +99,8 @@ bool QgsPointCloudLayerRenderer::render()
 
   // TODO cache!?
   QgsPointCloudIndex *pc = mLayer->dataProvider()->index();
-  if ( !pc || !pc->isValid() )
+  if ( mSubIndexes.isEmpty() &&
+       ( !pc || !pc->isValid() ) )
   {
     mReadyToCompose = true;
     return false;
@@ -117,8 +120,9 @@ bool QgsPointCloudLayerRenderer::render()
   mAttributes.push_back( QgsPointCloudAttribute( QStringLiteral( "Y" ), QgsPointCloudAttribute::Int32 ) );
 
   if ( !context.renderContext().zRange().isInfinite() ||
-       mRenderer->drawOrder2d() == QgsPointCloudRenderer::DrawOrder::BottomToTop ||
-       mRenderer->drawOrder2d() == QgsPointCloudRenderer::DrawOrder::TopToBottom )
+       mRenderer->drawOrder2d() == Qgis::PointCloudDrawOrder::BottomToTop ||
+       mRenderer->drawOrder2d() == Qgis::PointCloudDrawOrder::TopToBottom ||
+       renderContext()->elevationMap() )
     mAttributes.push_back( QgsPointCloudAttribute( QStringLiteral( "Z" ), QgsPointCloudAttribute::Int32 ) );
 
   // collect attributes required by renderer
@@ -140,7 +144,62 @@ bool QgsPointCloudLayerRenderer::render()
     mAttributes.push_back( mLayerAttributes.at( layerIndex ) );
   }
 
-  QgsPointCloudDataBounds db;
+  QgsRectangle renderExtent;
+  try
+  {
+    renderExtent = renderContext()->coordinateTransform().transformBoundingBox( renderContext()->mapExtent(), Qgis::TransformDirection::Reverse );
+  }
+  catch ( QgsCsException & )
+  {
+    QgsDebugMsg( QStringLiteral( "Transformation of extent failed!" ) );
+  }
+
+  bool canceled = false;
+  if ( mSubIndexes.isEmpty() )
+  {
+    canceled = !renderIndex( pc );
+  }
+  else
+  {
+    mSubIndexExtentRenderer->startRender( context );
+    for ( const auto &si : mSubIndexes )
+    {
+      if ( canceled )
+        break;
+
+      QgsPointCloudIndex *pc = si.index();
+
+      if ( !renderExtent.intersects( si.extent() ) )
+        continue;
+
+      if ( !pc || !pc->isValid() || renderExtent.width() > si.extent().width() )
+      {
+        // when dealing with virtual point clouds, we want to render the individual extents when zoomed out
+        // and only use the selected renderer when zoomed in
+        mSubIndexExtentRenderer->renderExtent( si.polygonBounds(), context );
+      }
+      else
+      {
+        canceled = !renderIndex( pc );
+      }
+    }
+    mSubIndexExtentRenderer->stopRender( context );
+  }
+
+  mRenderer->stopRender( context );
+  mReadyToCompose = true;
+  return !canceled;
+}
+
+bool QgsPointCloudLayerRenderer::renderIndex( QgsPointCloudIndex *pc )
+{
+  QgsPointCloudRenderContext context( *renderContext(),
+                                      pc->scale(),
+                                      pc->offset(),
+                                      mZScale,
+                                      mZOffset,
+                                      mFeedback.get() );
+
 
 #ifdef QGISDEBUG
   QElapsedTimer t;
@@ -178,7 +237,6 @@ bool QgsPointCloudLayerRenderer::render()
   if ( ( rootErrorInMapCoordinates < 0.0 ) || ( mapUnitsPerPixel < 0.0 ) || ( maximumError < 0.0 ) )
   {
     QgsDebugMsg( QStringLiteral( "invalid screen error" ) );
-    mReadyToCompose = true;
     return false;
   }
   double rootErrorPixels = rootErrorInMapCoordinates / mapUnitsPerPixel; // in pixels
@@ -193,13 +251,13 @@ bool QgsPointCloudLayerRenderer::render()
 
   switch ( mRenderer->drawOrder2d() )
   {
-    case QgsPointCloudRenderer::DrawOrder::BottomToTop:
-    case QgsPointCloudRenderer::DrawOrder::TopToBottom:
+    case Qgis::PointCloudDrawOrder::BottomToTop:
+    case Qgis::PointCloudDrawOrder::TopToBottom:
     {
       nodesDrawn += renderNodesSorted( nodes, pc, context, request, canceled, mRenderer->drawOrder2d() );
       break;
     }
-    case QgsPointCloudRenderer::DrawOrder::Default:
+    case Qgis::PointCloudDrawOrder::Default:
     {
       switch ( pc->accessType() )
       {
@@ -225,9 +283,6 @@ bool QgsPointCloudLayerRenderer::render()
   ( void )nodesDrawn;
 #endif
 
-  mRenderer->stopRender( context );
-
-  mReadyToCompose = true;
   return !canceled;
 }
 
@@ -276,9 +331,6 @@ int QgsPointCloudLayerRenderer::renderNodesSync( const QVector<IndexedPointCloud
 int QgsPointCloudLayerRenderer::renderNodesAsync( const QVector<IndexedPointCloudNode> &nodes, QgsPointCloudIndex *pc, QgsPointCloudRenderContext &context, QgsPointCloudRequest &request, bool &canceled )
 {
   int nodesDrawn = 0;
-
-  QElapsedTimer downloadTimer;
-  downloadTimer.start();
 
   if ( context.feedback() && context.feedback()->isCanceled() )
     return 0;
@@ -359,7 +411,7 @@ int QgsPointCloudLayerRenderer::renderNodesAsync( const QVector<IndexedPointClou
   return nodesDrawn;
 }
 
-int QgsPointCloudLayerRenderer::renderNodesSorted( const QVector<IndexedPointCloudNode> &nodes, QgsPointCloudIndex *pc, QgsPointCloudRenderContext &context, QgsPointCloudRequest &request, bool &canceled, QgsPointCloudRenderer::DrawOrder order )
+int QgsPointCloudLayerRenderer::renderNodesSorted( const QVector<IndexedPointCloudNode> &nodes, QgsPointCloudIndex *pc, QgsPointCloudRenderContext &context, QgsPointCloudRequest &request, bool &canceled, Qgis::PointCloudDrawOrder order )
 {
   int blockCount = 0;
   int pointCount = 0;
@@ -448,13 +500,13 @@ int QgsPointCloudLayerRenderer::renderNodesSorted( const QVector<IndexedPointClo
 
   switch ( order )
   {
-    case QgsPointCloudRenderer::DrawOrder::BottomToTop:
+    case Qgis::PointCloudDrawOrder::BottomToTop:
       std::sort( allPairs.begin(), allPairs.end(), []( QPair<int, double> a, QPair<int, double> b ) { return a.second < b.second; } );
       break;
-    case QgsPointCloudRenderer::DrawOrder::TopToBottom:
+    case Qgis::PointCloudDrawOrder::TopToBottom:
       std::sort( allPairs.begin(), allPairs.end(), []( QPair<int, double> a, QPair<int, double> b ) { return a.second > b.second; } );
       break;
-    case QgsPointCloudRenderer::DrawOrder::Default:
+    case Qgis::PointCloudDrawOrder::Default:
       break;
   }
 
@@ -519,7 +571,8 @@ QVector<IndexedPointCloudNode> QgsPointCloudLayerRenderer::traverseTree( const Q
   if ( !context.zRange().isInfinite() && !context.zRange().overlaps( adjustedNodeZRange ) )
     return nodes;
 
-  nodes.append( n );
+  if ( pc->nodePointCount( n ) > 0 )
+    nodes.append( n );
 
   double childrenErrorPixels = nodeErrorPixels / 2.0;
   if ( childrenErrorPixels < maxErrorPixels )

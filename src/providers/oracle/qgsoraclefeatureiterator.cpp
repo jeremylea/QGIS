@@ -18,15 +18,16 @@
 #include "qgsoracleconnpool.h"
 #include "qgsoracleexpressioncompiler.h"
 #include "qgsoracletransaction.h"
-
+#include "qgsdbquerylog.h"
 #include "qgslogger.h"
 #include "qgsmessagelog.h"
 #include "qgsgeometry.h"
-#include "qgssettings.h"
 #include "qgsexception.h"
 #include "qgsgeometryengine.h"
 
 #include <QObject>
+
+#include <algorithm>
 
 QgsOracleFeatureIterator::QgsOracleFeatureIterator( QgsOracleFeatureSource *source, bool ownSource, const QgsFeatureRequest &request )
   : QgsAbstractFeatureIteratorFromSource<QgsOracleFeatureSource>( source, ownSource, request )
@@ -108,6 +109,9 @@ QgsOracleFeatureIterator::QgsOracleFeatureIterator( QgsOracleFeatureSource *sour
   else
     mAttributeList = mSource->mFields.allAttributesList();
 
+  // Sort for query planners peace of mind: https://github.com/qgis/QGIS/issues/35309
+  std::sort( mAttributeList.begin(), mAttributeList.end() );
+
   bool limitAtProvider = ( mRequest.limit() >= 0 ) && mRequest.spatialFilterType() != Qgis::SpatialFilterType::DistanceWithin;
   QString whereClause;
 
@@ -115,6 +119,7 @@ QgsOracleFeatureIterator::QgsOracleFeatureIterator( QgsOracleFeatureSource *sour
   {
     // fetch geometry if requested
     mFetchGeometry = ( mRequest.flags() & QgsFeatureRequest::NoGeometry ) == 0
+                     || !mFilterRect.isNull()
                      || mRequest.spatialFilterType() == Qgis::SpatialFilterType::DistanceWithin;
     if ( mRequest.filterType() == QgsFeatureRequest::FilterExpression && mRequest.filterExpression()->needsGeometry() )
     {
@@ -191,7 +196,7 @@ QgsOracleFeatureIterator::QgsOracleFeatureIterator( QgsOracleFeatureSource *sour
 
   }
 
-  if ( mSource->mRequestedGeomType != QgsWkbTypes::Unknown && mSource->mRequestedGeomType != mSource->mDetectedGeomType )
+  if ( mSource->mRequestedGeomType != Qgis::WkbType::Unknown && mSource->mRequestedGeomType != mSource->mDetectedGeomType )
   {
     if ( !whereClause.isEmpty() )
       whereClause += QLatin1String( " AND " );

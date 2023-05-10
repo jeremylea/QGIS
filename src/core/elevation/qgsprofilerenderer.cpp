@@ -81,6 +81,31 @@ void QgsProfilePlotRenderer::startGeneration()
   mFutureWatcher.setFuture( mFuture );
 }
 
+void QgsProfilePlotRenderer::generateSynchronously()
+{
+  if ( isActive() )
+    return;
+
+  mStatus = Generating;
+
+  Q_ASSERT( mJobs.empty() );
+  mJobs.reserve( mGenerators.size() );
+
+  for ( const auto &it : mGenerators )
+  {
+    std::unique_ptr< ProfileJob > job = std::make_unique< ProfileJob >();
+    job->generator = it.get();
+    job->context = mContext;
+    it.get()->generateProfile( job->context );
+    job->results.reset( job->generator->takeResults() );
+    job->complete = true;
+    job->invalidatedResults.reset();
+    mJobs.emplace_back( std::move( job ) );
+  }
+
+  mStatus = Idle;
+}
+
 void QgsProfilePlotRenderer::cancelGeneration()
 {
   if ( !isActive() )
@@ -166,6 +191,27 @@ void QgsProfilePlotRenderer::setContext( const QgsProfileGenerationContext &cont
   }
 }
 
+void QgsProfilePlotRenderer::invalidateAllRefinableSources()
+{
+  for ( auto &job : mJobs )
+  {
+    // regenerate only those results which are refinable
+    const bool jobNeedsRegeneration = ( job->generator->flags() & Qgis::ProfileGeneratorFlag::RespectsMaximumErrorMapUnit )
+                                      || ( job->generator->flags() & Qgis::ProfileGeneratorFlag::RespectsDistanceRange )
+                                      || ( job->generator->flags() & Qgis::ProfileGeneratorFlag::RespectsElevationRange );
+    if ( !jobNeedsRegeneration )
+      continue;
+
+    job->mutex.lock();
+    job->context = mContext;
+    if ( job->results && job->complete )
+      job->invalidatedResults = std::move( job->results );
+    job->results.reset();
+    job->complete = false;
+    job->mutex.unlock();
+  }
+}
+
 void QgsProfilePlotRenderer::replaceSource( QgsAbstractProfileSource *source )
 {
   replaceSourceInternal( source, false );
@@ -191,6 +237,7 @@ bool QgsProfilePlotRenderer::replaceSourceInternal( QgsAbstractProfileSource *so
   {
     if ( job->generator && job->generator->sourceId() == sourceId )
     {
+      job->mutex.lock();
       res = true;
       if ( clearPreviousResults )
       {
@@ -202,6 +249,8 @@ bool QgsProfilePlotRenderer::replaceSourceInternal( QgsAbstractProfileSource *so
         job->results->copyPropertiesFromGenerator( generator.get() );
       }
       job->generator = generator.get();
+      job->mutex.unlock();
+
       for ( auto it = mGenerators.begin(); it != mGenerators.end(); )
       {
         if ( ( *it )->sourceId() == sourceId )
@@ -247,6 +296,8 @@ QgsDoubleRange QgsProfilePlotRenderer::zRange() const
 QImage QgsProfilePlotRenderer::renderToImage( int width, int height, double distanceMin, double distanceMax, double zMin, double zMax, const QString &sourceId )
 {
   QImage res( width, height, QImage::Format_ARGB32_Premultiplied );
+  res.setDotsPerMeterX( 96 / 25.4 * 1000 );
+  res.setDotsPerMeterY( 96 / 25.4 * 1000 );
   res.fill( Qt::transparent );
 
   QPainter p( &res );
@@ -313,7 +364,7 @@ QgsProfileSnapResult QgsProfilePlotRenderer::snapPoint( const QgsProfilePoint &p
       if ( jobSnapResult.isValid() )
       {
         const double snapDistance = std::pow( point.distance() - jobSnapResult.snappedPoint.distance(), 2 )
-                                    + std::pow( ( point.elevation() - jobSnapResult.snappedPoint.elevation() ) * context.displayRatioElevationVsDistance, 2 );
+                                    + std::pow( ( point.elevation() - jobSnapResult.snappedPoint.elevation() ) / context.displayRatioElevationVsDistance, 2 );
 
         if ( snapDistance < bestSnapDistance )
         {
@@ -326,6 +377,44 @@ QgsProfileSnapResult QgsProfilePlotRenderer::snapPoint( const QgsProfilePoint &p
   }
 
   return bestSnapResult;
+}
+
+QVector<QgsProfileIdentifyResults> QgsProfilePlotRenderer::identify( const QgsProfilePoint &point, const QgsProfileIdentifyContext &context )
+{
+  QVector<QgsProfileIdentifyResults> res;
+  if ( !mRequest.profileCurve() )
+    return res;
+
+  for ( const auto &job : mJobs )
+  {
+    job->mutex.lock();
+    if ( job->complete && job->results )
+    {
+      res.append( job->results->identify( point, context ) );
+    }
+    job->mutex.unlock();
+  }
+
+  return res;
+}
+
+QVector<QgsProfileIdentifyResults> QgsProfilePlotRenderer::identify( const QgsDoubleRange &distanceRange, const QgsDoubleRange &elevationRange, const QgsProfileIdentifyContext &context )
+{
+  QVector<QgsProfileIdentifyResults> res;
+  if ( !mRequest.profileCurve() )
+    return res;
+
+  for ( const auto &job : mJobs )
+  {
+    job->mutex.lock();
+    if ( job->complete && job->results )
+    {
+      res.append( job->results->identify( distanceRange, elevationRange, context ) );
+    }
+    job->mutex.unlock();
+  }
+
+  return res;
 }
 
 void QgsProfilePlotRenderer::onGeneratingFinished()

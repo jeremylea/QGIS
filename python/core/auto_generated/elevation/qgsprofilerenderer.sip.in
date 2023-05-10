@@ -57,6 +57,19 @@ Start the generation job and immediately return.
 Does nothing if the generation is already in progress.
 %End
 
+    void generateSynchronously();
+%Docstring
+Generate the profile results synchronously in this thread. The function does not return until the generation
+is complete.
+
+This is an alternative to ordinary API (using :py:func:`~QgsProfilePlotRenderer.startGeneration` + waiting for :py:func:`~QgsProfilePlotRenderer.generationFinished` signal).
+Users are discouraged to use this method unless they have a strong reason for doing it.
+The synchronous generation blocks the main thread, making the application unresponsive.
+Also, it is not possible to cancel generation while it is in progress.
+
+.. versionadded:: 3.30
+%End
+
     void cancelGeneration();
 %Docstring
 Stop the generation job - does not return until the job has terminated.
@@ -85,6 +98,11 @@ Returns ``True`` if the generation job is currently running in background.
 Sets the ``context`` in which the profile generation will occur.
 
 Depending on the sources present, this may trigger automatically a regeneration of results.
+%End
+
+    void invalidateAllRefinableSources();
+%Docstring
+Invalidates previous results from all refinable sources.
 %End
 
     void replaceSource( QgsAbstractProfileSource *source );
@@ -136,6 +154,16 @@ If ``sourceId`` is empty then all sources will be rendered, otherwise only the m
     QgsProfileSnapResult snapPoint( const QgsProfilePoint &point, const QgsProfileSnapContext &context );
 %Docstring
 Snap a ``point`` to the results.
+%End
+
+    QVector<QgsProfileIdentifyResults> identify( const QgsProfilePoint &point, const QgsProfileIdentifyContext &context );
+%Docstring
+Identify results visible at the specified profile ``point``.
+%End
+
+    QVector<QgsProfileIdentifyResults> identify( const QgsDoubleRange &distanceRange, const QgsDoubleRange &elevationRange, const QgsProfileIdentifyContext &context );
+%Docstring
+Identify results visible within the specified ranges.
 %End
 
   signals:

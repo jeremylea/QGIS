@@ -259,6 +259,20 @@ class CORE_EXPORT QgsMapLayerElevationProperties : public QObject
     void changed();
 
     /**
+     * Emitted when the z offset changes.
+     *
+     * \since QGIS 3.26
+     */
+    void zOffsetChanged();
+
+    /**
+     * Emitted when the z scale changes.
+     *
+     * \since QGIS 3.26
+     */
+    void zScaleChanged();
+
+    /**
      * Emitted when any of the elevation properties which relate solely to presentation of elevation
      * results have changed.
      *
@@ -266,14 +280,14 @@ class CORE_EXPORT QgsMapLayerElevationProperties : public QObject
      * \see profileGenerationPropertyChanged()
      * \since QGIS 3.26
      */
-    void renderingPropertyChanged();
+    void profileRenderingPropertyChanged();
 
     /**
      * Emitted when any of the elevation properties which relate solely to generation of elevation
      * profiles have changed.
      *
      * \see changed()
-     * \see renderingPropertyChanged()
+     * \see profileRenderingPropertyChanged()
      * \since QGIS 3.26
      */
     void profileGenerationPropertyChanged();

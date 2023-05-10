@@ -20,6 +20,7 @@
 
 #include "qgis_core.h"
 #include "qgsfeature.h"
+#include "qgsvectordataprovider.h"
 
 #include <ogr_api.h>
 #include <gdal.h>
@@ -31,6 +32,7 @@ class QgsCoordinateReferenceSystem;
 class QgsFieldDomain;
 
 class QTextCodec;
+class QgsWeakRelation;
 
 namespace gdal
 {
@@ -113,6 +115,22 @@ namespace gdal
 
   };
 
+#if GDAL_VERSION_NUM >= GDAL_COMPUTE_VERSION(3,6,0)
+
+  /**
+   * Closes and cleanups GDAL relationship.
+   */
+  struct GDALRelationshipDeleter
+  {
+
+    /**
+     * Destroys GDAL \a relationship, using the correct gdal calls.
+     */
+    void CORE_EXPORT operator()( GDALRelationshipH relationship ) const;
+
+  };
+#endif
+
   /**
    * Scoped OGR data source.
    */
@@ -152,6 +170,14 @@ namespace gdal
    * Scoped GDAL warp options.
    */
   using warp_options_unique_ptr = std::unique_ptr< GDALWarpOptions, GDALWarpOptionsDeleter >;
+
+#if GDAL_VERSION_NUM >= GDAL_COMPUTE_VERSION(3,6,0)
+
+  /**
+   * Scoped GDAL relationship.
+   */
+  using relationship_unique_ptr = std::unique_ptr< std::remove_pointer<GDALRelationshipH>::type, GDALRelationshipDeleter >;
+#endif
 }
 
 /**
@@ -179,6 +205,13 @@ class CORE_EXPORT QgsOgrUtils
      * \since QGIS 3.26
      */
     static std::unique_ptr<OGRField> variantToOGRField( const QVariant &value );
+
+    /**
+     * Gets the value of OGRField::Date::TZFlag from the timezone of a QDateTime.
+     *
+     * \since QGIS 3.30
+     */
+    static int OGRTZFlagFromQt( const QDateTime &datetime );
 
     /**
      * Reads an OGR feature and converts it to a QgsFeature.
@@ -285,7 +318,7 @@ class CORE_EXPORT QgsOgrUtils
      *
      * \since QGIS 3.4.9
      */
-    static QgsWkbTypes::Type ogrGeometryTypeToQgsWkbType( OGRwkbGeometryType ogrGeomType );
+    static Qgis::WkbType ogrGeometryTypeToQgsWkbType( OGRwkbGeometryType ogrGeomType );
 
     /**
      * Returns a WKT string corresponding to the specified OGR \a srs object.
@@ -396,6 +429,13 @@ class CORE_EXPORT QgsOgrUtils
      */
     static QVariant stringToVariant( OGRFieldType type, OGRFieldSubType subType, const QString &string ) SIP_SKIP;
 
+    /**
+     * Returns the list of native field types supported for a \a driver.
+     *
+     * \since QGIS 3.28
+     */
+    static QList<QgsVectorDataProvider::NativeType> nativeFieldTypesForDriver( GDALDriverH driver ) SIP_SKIP;
+
 #ifndef SIP_RUN
 #if GDAL_VERSION_NUM >= GDAL_COMPUTE_VERSION(3,3,0)
 
@@ -418,6 +458,30 @@ class CORE_EXPORT QgsOgrUtils
     static OGRFieldDomainH convertFieldDomain( const QgsFieldDomain *domain );
 #endif
 #endif
+
+#ifndef SIP_RUN
+#if GDAL_VERSION_NUM >= GDAL_COMPUTE_VERSION(3,6,0)
+
+    /**
+     * Converts an GDAL \a relationship definition to a QgsWeakRelation equivalent.
+     *
+     * \note Requires GDAL >= 3.6
+     * \note Not available in Python bindings
+     * \since QGIS 3.30
+     */
+    static QgsWeakRelation convertRelationship( GDALRelationshipH relationship, const QString &datasetUri );
+
+    /**
+     * Converts a QGIS relation to a GDAL relationship equivalent.
+     *
+     * \note Requires GDAL >= 3.6
+     * \note Not available in Python bindings
+     * \since QGIS 3.30
+     */
+    static gdal::relationship_unique_ptr convertRelationship( const QgsWeakRelation &relation, QString &error );
+#endif
+#endif
+
 };
 
 #endif // QGSOGRUTILS_H

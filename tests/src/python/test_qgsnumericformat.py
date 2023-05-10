@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """QGIS Unit tests for QgsNumericFormat
 
 .. note:: This program is free software; you can redistribute it and/or modify
@@ -11,21 +10,22 @@ __date__ = '6/01/2020'
 __copyright__ = 'Copyright 2020, The QGIS Project'
 
 import qgis  # NOQA
-
-from qgis.core import (QgsFallbackNumericFormat,
-                       QgsBasicNumericFormat,
-                       QgsNumericFormatContext,
-                       QgsBearingNumericFormat,
-                       QgsPercentageNumericFormat,
-                       QgsScientificNumericFormat,
-                       QgsCurrencyNumericFormat,
-                       QgsNumericFormatRegistry,
-                       QgsNumericFormat,
-                       QgsFractionNumericFormat,
-                       QgsGeographicCoordinateNumericFormat,
-                       QgsReadWriteContext)
-from qgis.testing import start_app, unittest
 from qgis.PyQt.QtXml import QDomDocument
+from qgis.core import (
+    QgsBasicNumericFormat,
+    QgsBearingNumericFormat,
+    QgsCurrencyNumericFormat,
+    QgsFallbackNumericFormat,
+    QgsFractionNumericFormat,
+    QgsGeographicCoordinateNumericFormat,
+    QgsNumericFormat,
+    QgsNumericFormatContext,
+    QgsNumericFormatRegistry,
+    QgsPercentageNumericFormat,
+    QgsReadWriteContext,
+    QgsScientificNumericFormat,
+)
+from qgis.testing import start_app, unittest
 
 start_app()
 
@@ -91,6 +91,7 @@ class TestQgsNumericFormat(unittest.TestCase):
         self.assertEqual(f.formatDouble(5.5, context), '5.5')
         self.assertEqual(f.formatDouble(-5, context), '-5')
         self.assertEqual(f.formatDouble(-5.5, context), '-5.5')
+        self.assertEqual(f.formatDouble(-0.000000000000000000000000001, context), '0')
         self.assertEqual(f.formatDouble(-55555555.5, context), '-55,555,555.5')
         context.setDecimalSeparator('☕')
         self.assertEqual(f.formatDouble(0, context), '0')
@@ -120,6 +121,7 @@ class TestQgsNumericFormat(unittest.TestCase):
         self.assertEqual(f.formatDouble(55555555.123456, context), '55555555⛹123')
         self.assertEqual(f.formatDouble(-5.5, context), '-5⛹5')
         self.assertEqual(f.formatDouble(-55555555.5, context), '-55555555⛹5')
+        self.assertEqual(f.formatDouble(-0.000000000000000000000000001, context), '0')
         f.setShowTrailingZeros(True)
         self.assertEqual(f.formatDouble(0, context), '0⛹000')
         self.assertEqual(f.formatDouble(5, context), '5⛹000')
@@ -129,6 +131,7 @@ class TestQgsNumericFormat(unittest.TestCase):
         self.assertEqual(f.formatDouble(55555555.123456, context), '55555555⛹123')
         self.assertEqual(f.formatDouble(-5.5, context), '-5⛹500')
         self.assertEqual(f.formatDouble(-55555555.5, context), '-55555555⛹500')
+        self.assertEqual(f.formatDouble(-0.000000000000000000000000001, context), '0⛹000')
         f.setShowPlusSign(True)
         self.assertEqual(f.formatDouble(0, context), '0⛹000')
         self.assertEqual(f.formatDouble(5, context), '+5⛹000')
@@ -168,6 +171,7 @@ class TestQgsNumericFormat(unittest.TestCase):
         self.assertEqual(f.formatDouble(55555555.123456, context), '55600000')
         self.assertEqual(f.formatDouble(-5.5, context), '-5⛹50')
         self.assertEqual(f.formatDouble(-55555555.5, context), '-55600000')
+        self.assertEqual(f.formatDouble(-0.000000000000000000000000001, context), '0⛹00')
 
         f.setThousandsSeparator('✅')
         f.setShowThousandsSeparator(True)

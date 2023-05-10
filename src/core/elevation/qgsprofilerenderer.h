@@ -83,6 +83,19 @@ class CORE_EXPORT QgsProfilePlotRenderer : public QObject
     void startGeneration();
 
     /**
+     * Generate the profile results synchronously in this thread. The function does not return until the generation
+     * is complete.
+     *
+     * This is an alternative to ordinary API (using startGeneration() + waiting for generationFinished() signal).
+     * Users are discouraged to use this method unless they have a strong reason for doing it.
+     * The synchronous generation blocks the main thread, making the application unresponsive.
+     * Also, it is not possible to cancel generation while it is in progress.
+     *
+     * \since QGIS 3.30
+     */
+    void generateSynchronously();
+
+    /**
      * Stop the generation job - does not return until the job has terminated.
      * Does nothing if the generation is not active.
      */
@@ -107,6 +120,11 @@ class CORE_EXPORT QgsProfilePlotRenderer : public QObject
      * Depending on the sources present, this may trigger automatically a regeneration of results.
      */
     void setContext( const QgsProfileGenerationContext &context );
+
+    /**
+     * Invalidates previous results from all refinable sources.
+     */
+    void invalidateAllRefinableSources();
 
     /**
      * Replaces the existing source with matching ID.
@@ -158,6 +176,16 @@ class CORE_EXPORT QgsProfilePlotRenderer : public QObject
      * Snap a \a point to the results.
      */
     QgsProfileSnapResult snapPoint( const QgsProfilePoint &point, const QgsProfileSnapContext &context );
+
+    /**
+     * Identify results visible at the specified profile \a point.
+     */
+    QVector<QgsProfileIdentifyResults> identify( const QgsProfilePoint &point, const QgsProfileIdentifyContext &context );
+
+    /**
+     * Identify results visible within the specified ranges.
+     */
+    QVector<QgsProfileIdentifyResults> identify( const QgsDoubleRange &distanceRange, const QgsDoubleRange &elevationRange, const QgsProfileIdentifyContext &context );
 
   signals:
 

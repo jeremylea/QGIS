@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """QGIS Unit tests for QgsVectorLayerElevationProperties
 
 .. note:: This program is free software; you can redistribute it and/or modify
@@ -11,24 +10,22 @@ __date__ = '09/11/2020'
 __copyright__ = 'Copyright 2020, The QGIS Project'
 
 import qgis  # NOQA
-
+from qgis.PyQt.QtXml import QDomDocument
 from qgis.core import (
     Qgis,
+    QgsFillSymbol,
+    QgsLineSymbol,
+    QgsMapLayerElevationProperties,
+    QgsMarkerSymbol,
+    QgsProperty,
+    QgsPropertyCollection,
+    QgsReadWriteContext,
     QgsVectorLayer,
     QgsVectorLayerElevationProperties,
-    QgsReadWriteContext,
-    QgsLineSymbol,
-    QgsMarkerSymbol,
-    QgsFillSymbol,
-    QgsProperty,
-    QgsMapLayerElevationProperties,
-    QgsPropertyCollection
 )
-from utilities import unitTestDataPath
-
-from qgis.PyQt.QtXml import QDomDocument
-
 from qgis.testing import start_app, unittest
+
+from utilities import unitTestDataPath
 
 start_app()
 
@@ -45,6 +42,9 @@ class TestQgsVectorLayerElevationProperties(unittest.TestCase):
         self.assertEqual(props.clamping(), Qgis.AltitudeClamping.Terrain)
         self.assertEqual(props.binding(), Qgis.AltitudeBinding.Centroid)
         self.assertTrue(props.respectLayerSymbology())
+        self.assertEqual(props.type(), Qgis.VectorProfileType.IndividualFeatures)
+        self.assertEqual(props.profileSymbology(), Qgis.ProfileSurfaceSymbology.Line)
+        self.assertFalse(props.showMarkerSymbolInSurfacePlots())
 
         props.setZOffset(0.5)
         props.setZScale(2)
@@ -53,6 +53,10 @@ class TestQgsVectorLayerElevationProperties(unittest.TestCase):
         props.setExtrusionHeight(10)
         props.setExtrusionEnabled(True)
         props.setRespectLayerSymbology(False)
+        props.setType(Qgis.VectorProfileType.ContinuousSurface)
+        props.setProfileSymbology(Qgis.ProfileSurfaceSymbology.FillBelow)
+        props.setShowMarkerSymbolInSurfacePlots(True)
+
         self.assertEqual(props.zScale(), 2)
         self.assertEqual(props.zOffset(), 0.5)
         self.assertEqual(props.extrusionHeight(), 10)
@@ -61,6 +65,9 @@ class TestQgsVectorLayerElevationProperties(unittest.TestCase):
         self.assertEqual(props.clamping(), Qgis.AltitudeClamping.Relative)
         self.assertEqual(props.binding(), Qgis.AltitudeBinding.Vertex)
         self.assertFalse(props.respectLayerSymbology())
+        self.assertEqual(props.type(), Qgis.VectorProfileType.ContinuousSurface)
+        self.assertEqual(props.profileSymbology(), Qgis.ProfileSurfaceSymbology.FillBelow)
+        self.assertTrue(props.showMarkerSymbolInSurfacePlots())
 
         props.dataDefinedProperties().setProperty(QgsMapLayerElevationProperties.ExtrusionHeight, QgsProperty.fromExpression('1*5'))
         self.assertEqual(props.dataDefinedProperties().property(QgsMapLayerElevationProperties.ExtrusionHeight).asExpression(), '1*5')
@@ -98,6 +105,9 @@ class TestQgsVectorLayerElevationProperties(unittest.TestCase):
         self.assertEqual(props2.extrusionHeight(), 10)
         self.assertTrue(props2.extrusionEnabled())
         self.assertFalse(props2.respectLayerSymbology())
+        self.assertEqual(props2.type(), Qgis.VectorProfileType.ContinuousSurface)
+        self.assertEqual(props2.profileSymbology(), Qgis.ProfileSurfaceSymbology.FillBelow)
+        self.assertTrue(props2.showMarkerSymbolInSurfacePlots())
 
         self.assertEqual(props2.profileLineSymbol().color().name(), '#ff4433')
         self.assertEqual(props2.profileFillSymbol().color().name(), '#ff4455')
@@ -115,6 +125,9 @@ class TestQgsVectorLayerElevationProperties(unittest.TestCase):
         self.assertEqual(props_clone.extrusionHeight(), 10)
         self.assertTrue(props_clone.extrusionEnabled())
         self.assertFalse(props_clone.respectLayerSymbology())
+        self.assertEqual(props_clone.type(), Qgis.VectorProfileType.ContinuousSurface)
+        self.assertEqual(props_clone.profileSymbology(), Qgis.ProfileSurfaceSymbology.FillBelow)
+        self.assertTrue(props_clone.showMarkerSymbolInSurfacePlots())
 
         self.assertEqual(props_clone.profileLineSymbol().color().name(), '#ff4433')
         self.assertEqual(props_clone.profileFillSymbol().color().name(), '#ff4455')

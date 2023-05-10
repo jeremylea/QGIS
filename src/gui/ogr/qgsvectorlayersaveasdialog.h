@@ -20,8 +20,6 @@
 
 #include "ui_qgsvectorlayersaveasdialogbase.h"
 #include <QDialog>
-#include "qgshelp.h"
-#include "qgsfields.h"
 #include "qgsvectorfilewriter.h"
 #include "qgis_gui.h"
 
@@ -195,7 +193,7 @@ class GUI_EXPORT QgsVectorLayerSaveAsDialog : public QDialog, private Ui::QgsVec
      * \see forceMulti()
      * \see includeZ()
      */
-    QgsWkbTypes::Type geometryType() const;
+    Qgis::WkbType geometryType() const;
 
     /**
      * Returns TRUE if geometry type is set to automatic.
@@ -263,6 +261,7 @@ class GUI_EXPORT QgsVectorLayerSaveAsDialog : public QDialog, private Ui::QgsVec
     QgsMapCanvas *mMapCanvas = nullptr;
     QgsVectorFileWriter::ActionOnExistingFile mActionOnExistingFile;
     Options mOptions = AllOptions;
+    QString mDefaultOutputLayerNameFromInputLayerName;
 };
 
 Q_DECLARE_OPERATORS_FOR_FLAGS( QgsVectorLayerSaveAsDialog::Options )

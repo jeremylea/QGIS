@@ -21,7 +21,7 @@
 #include <QDir>
 
 #include "qgssettings.h"
-#include "qgslogger.h"
+#include "qgsvariantutils.h"
 
 Q_GLOBAL_STATIC( QString, sGlobalSettingsPath )
 
@@ -133,24 +133,34 @@ QStringList QgsSettings::childKeys() const
   return keys;
 }
 
-QStringList QgsSettings::childGroups() const
+QStringList QgsSettings::childGroups( Qgis::SettingsOrigin origin ) const
 {
-  QStringList keys = mUserSettings->childGroups();
-  if ( mGlobalSettings )
+  switch ( origin )
   {
-    const QStringList constChildGroups = mGlobalSettings->childGroups();
-    std::copy_if( constChildGroups.constBegin(), constChildGroups.constEnd(), std::back_inserter( keys ), [&keys]( const QString & key ) {return !keys.contains( key );} );
+    case Qgis::SettingsOrigin::Any:
+    {
+      QStringList keys = mUserSettings->childGroups();
+      if ( mGlobalSettings )
+      {
+        const QStringList constChildGroups = mGlobalSettings->childGroups();
+        std::copy_if( constChildGroups.constBegin(), constChildGroups.constEnd(), std::back_inserter( keys ), [&keys]( const QString & key ) {return !keys.contains( key );} );
+      }
+      return keys;
+    }
+
+    case Qgis::SettingsOrigin::Local:
+      return mUserSettings->childGroups();
+
+    case Qgis::SettingsOrigin::Global:
+      return  mGlobalSettings ? mGlobalSettings->childGroups() : QStringList();
   }
-  return keys;
+
+  BUILTIN_UNREACHABLE
 }
+
 QStringList QgsSettings::globalChildGroups() const
 {
-  QStringList keys;
-  if ( mGlobalSettings )
-  {
-    keys = mGlobalSettings->childGroups();
-  }
-  return keys;
+  return childGroups( Qgis::SettingsOrigin::Global );
 }
 
 QString QgsSettings::globalSettingsPath()
@@ -161,7 +171,7 @@ QString QgsSettings::globalSettingsPath()
 QVariant QgsSettings::value( const QString &key, const QVariant &defaultValue, const QgsSettings::Section section ) const
 {
   const QString pKey = prefixedKey( key, section );
-  if ( !mUserSettings->value( pKey ).isNull() )
+  if ( !QgsVariantUtils::isNull( mUserSettings->value( pKey ) ) )
   {
     return mUserSettings->value( pKey );
   }
@@ -274,6 +284,17 @@ void QgsSettings::setArrayIndex( int i )
   {
     mUserSettings->setArrayIndex( i );
   }
+}
+
+Qgis::SettingsOrigin QgsSettings::origin( const QString &key ) const
+{
+  if ( mGlobalSettings && mGlobalSettings->contains( key ) )
+    return Qgis::SettingsOrigin::Global;
+
+  if ( mUserSettings->contains( key ) )
+    return Qgis::SettingsOrigin::Local;
+
+  return Qgis::SettingsOrigin::Any;
 }
 
 void QgsSettings::setValue( const QString &key, const QVariant &value, const QgsSettings::Section section )

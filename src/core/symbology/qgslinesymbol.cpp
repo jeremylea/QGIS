@@ -15,6 +15,7 @@
 
 #include "qgslinesymbol.h"
 #include "qgslinesymbollayer.h"
+#include "qgsgeometrygeneratorsymbollayer.h"
 #include "qgssymbollayerutils.h"
 #include "qgspainteffect.h"
 
@@ -44,7 +45,6 @@ void QgsLineSymbol::setWidth( double w ) const
   for ( QgsSymbolLayer *layer : constMLayers )
   {
     QgsLineSymbolLayer *lineLayer = dynamic_cast<QgsLineSymbolLayer *>( layer );
-
     if ( lineLayer )
     {
       if ( qgsDoubleNear( lineLayer->width(), origWidth ) )
@@ -60,10 +60,27 @@ void QgsLineSymbol::setWidth( double w ) const
       if ( !qgsDoubleNear( origWidth, 0.0 ) && !qgsDoubleNear( lineLayer->offset(), 0.0 ) )
         lineLayer->setOffset( lineLayer->offset() * w / origWidth );
     }
+    else
+    {
+      QgsGeometryGeneratorSymbolLayer *geomGeneratorLayer = dynamic_cast<QgsGeometryGeneratorSymbolLayer *>( layer );
+      if ( geomGeneratorLayer && geomGeneratorLayer->symbolType() == Qgis::SymbolType::Line )
+      {
+        QgsLineSymbol *lineSymbol = qgis::down_cast<QgsLineSymbol *>( geomGeneratorLayer->subSymbol() );
+        if ( qgsDoubleNear( lineSymbol->width(), origWidth ) )
+        {
+          lineSymbol->setWidth( w );
+        }
+        else if ( !qgsDoubleNear( origWidth, 0.0 ) )
+        {
+          // proportionally scale the width
+          lineSymbol->setWidth( lineSymbol->width() * w / origWidth );
+        }
+      }
+    }
   }
 }
 
-void QgsLineSymbol::setWidthUnit( QgsUnitTypes::RenderUnit unit ) const
+void QgsLineSymbol::setWidthUnit( Qgis::RenderUnit unit ) const
 {
   const auto constLLayers = mLayers;
   for ( QgsSymbolLayer *layer : constLLayers )
@@ -91,6 +108,17 @@ double QgsLineSymbol::width() const
       const double width = lineLayer->width();
       if ( width > maxWidth )
         maxWidth = width;
+    }
+    else
+    {
+      QgsGeometryGeneratorSymbolLayer *geomGeneratorLayer = dynamic_cast<QgsGeometryGeneratorSymbolLayer *>( symbolLayer );
+      if ( geomGeneratorLayer && geomGeneratorLayer->symbolType() == Qgis::SymbolType::Line )
+      {
+        QgsLineSymbol *lineSymbol = qgis::down_cast<QgsLineSymbol *>( geomGeneratorLayer->subSymbol() );
+        const double width = lineSymbol->width();
+        if ( width > maxWidth )
+          maxWidth = width;
+      }
     }
   }
   return maxWidth;
@@ -208,8 +236,8 @@ void QgsLineSymbol::renderPolyline( const QPolygonF &points, const QgsFeature *f
 
   //save old painter
   QPainter *renderPainter = context.painter();
-  QgsSymbolRenderContext symbolContext( context, QgsUnitTypes::RenderUnknownUnit, opacity, selected, mRenderHints, f );
-  symbolContext.setOriginalGeometryType( QgsWkbTypes::LineGeometry );
+  QgsSymbolRenderContext symbolContext( context, Qgis::RenderUnit::Unknown, opacity, selected, mRenderHints, f );
+  symbolContext.setOriginalGeometryType( Qgis::GeometryType::Line );
   symbolContext.setGeometryPartCount( symbolRenderContext()->geometryPartCount() );
   symbolContext.setGeometryPartNum( symbolRenderContext()->geometryPartNum() );
 
@@ -224,7 +252,7 @@ void QgsLineSymbol::renderPolyline( const QPolygonF &points, const QgsFeature *f
         renderPolylineUsingLayer( lineLayer, points, symbolContext );
       }
       else
-        renderUsingLayer( symbolLayer, symbolContext, QgsWkbTypes::LineGeometry, &points );
+        renderUsingLayer( symbolLayer, symbolContext, Qgis::GeometryType::Line, &points );
     }
     return;
   }
@@ -245,7 +273,7 @@ void QgsLineSymbol::renderPolyline( const QPolygonF &points, const QgsFeature *f
     }
     else
     {
-      renderUsingLayer( symbolLayer, symbolContext, QgsWkbTypes::LineGeometry, &points );
+      renderUsingLayer( symbolLayer, symbolContext, Qgis::GeometryType::Line, &points );
     }
   }
 

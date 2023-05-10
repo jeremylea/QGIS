@@ -81,6 +81,11 @@ class APP_EXPORT QgsProjectProperties : public QgsOptionsDialogBase, private Ui:
     void apply();
 
     /**
+     * Slot called when cancel button is pressed or dialog is not accepted
+     */
+    void cancel();
+
+    /**
      * Let the user add a scale to the list of project scales
      * used in scale combobox instead of global ones.
     */
@@ -105,9 +110,9 @@ class APP_EXPORT QgsProjectProperties : public QgsOptionsDialogBase, private Ui:
     void onGenerateTsFileButton() const;
 
     /**
-     * Set WMS default extent to current canvas extent
+     * When the group box about advertised extent has been toggled
      */
-    void pbnWMSExtCanvas_clicked();
+    void wmsExtent_toggled();
 
     /**
      *
@@ -148,15 +153,6 @@ class APP_EXPORT QgsProjectProperties : public QgsOptionsDialogBase, private Ui:
      * Slots to launch OWS test
      */
     void pbnLaunchOWSChecker_clicked();
-
-    /**
-     * Slots for Styles
-     */
-    void pbtnStyleManager_clicked();
-    void pbtnStyleMarker_clicked();
-    void pbtnStyleLine_clicked();
-    void pbtnStyleFill_clicked();
-    void pbtnStyleColorRamp_clicked();
 
     /**
      * Slot to link WMTS checkboxes in tree widget
@@ -204,19 +200,16 @@ class APP_EXPORT QgsProjectProperties : public QgsOptionsDialogBase, private Ui:
      */
     void calculateFromLayersButton_clicked();
 
+    void addStyleDatabase();
+    void removeStyleDatabase();
+    void newStyleDatabase();
+
   private:
 
     /**
       * Called when the user sets a CRS for the project.
       */
     void crsChanged( const QgsCoordinateReferenceSystem &crs );
-
-    //! Formats for displaying coordinates
-    enum CoordinateFormat
-    {
-      Geographic, //!< Geographic
-      MapUnits, //!< Show coordinates in map units
-    };
 
     QgsRelationManagerDialog *mRelationManagerDlg = nullptr;
     QgsMapCanvas *mMapCanvas = nullptr;
@@ -230,9 +223,6 @@ class APP_EXPORT QgsProjectProperties : public QgsOptionsDialogBase, private Ui:
     QgsCoordinateReferenceSystem mCrs;
 
     void checkPageWidgetNameMap();
-
-    void populateStyles();
-    void editSymbol( QComboBox *cbo );
 
     /**
      * Reset the Python macros
@@ -267,7 +257,7 @@ class APP_EXPORT QgsProjectProperties : public QgsOptionsDialogBase, private Ui:
     void setCurrentEllipsoid( const QString &ellipsoidAcronym );
 
     //! Create a new scale item and add it to the list of scales
-    QListWidgetItem *addScaleToScaleList( const QString &newScale );
+    QListWidgetItem *addScaleToScaleList( double newScaleDenominator );
 
     //! Add a scale item to the list of scales
     void addScaleToScaleList( QListWidgetItem *newItem );
@@ -275,6 +265,10 @@ class APP_EXPORT QgsProjectProperties : public QgsOptionsDialogBase, private Ui:
     static const char *GEO_NONE_DESC;
 
     void updateGuiForMapUnits();
+    void updateGuiForCoordinateType();
+    void updateGuiForCoordinateCrs();
+
+    void addStyleDatabasePrivate( bool createNew );
 
     void showHelp();
 

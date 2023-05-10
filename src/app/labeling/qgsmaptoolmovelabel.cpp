@@ -69,7 +69,7 @@ void QgsMapToolMoveLabel::cadCanvasMoveEvent( QgsMapMouseEvent *e )
   {
     const QgsPointXY pointMapCoords = e->mapPoint();
 
-    bool isCurvedOrLine { mCurrentLabel.settings.placement == QgsPalLayerSettings::Placement::Curved || mCurrentLabel.settings.placement == QgsPalLayerSettings::Placement::Line };
+    bool isCurvedOrLine { mCurrentLabel.settings.placement == Qgis::LabelPlacement::Curved || mCurrentLabel.settings.placement == Qgis::LabelPlacement::Line };
     if ( isCurvedOrLine )
     {
       // Determine the closest point on the feature
@@ -199,7 +199,7 @@ void QgsMapToolMoveLabel::cadCanvasPressEvent( QgsMapMouseEvent *e )
       mClickOffsetX = 0;
       mClickOffsetY = 0;
 
-      mCalloutMoveRubberBand = new QgsRubberBand( mCanvas, QgsWkbTypes::LineGeometry );
+      mCalloutMoveRubberBand = new QgsRubberBand( mCanvas, Qgis::GeometryType::Line );
       mCalloutMoveRubberBand->addPoint( mCurrentCallout.origin() );
       mCalloutMoveRubberBand->addPoint( mCurrentCallout.destination() );
       mCalloutMoveRubberBand->setColor( QColor( 0, 255, 0, 65 ) );
@@ -225,7 +225,7 @@ void QgsMapToolMoveLabel::cadCanvasPressEvent( QgsMapMouseEvent *e )
       clearHoveredLabel();
 
       mCurrentLabel = LabelDetails( labelPos, canvas() );
-      mLabelTearFromLineThreshold = QFontMetrics( mCurrentLabel.settings.format().font() ).horizontalAdvance( 'X' ) * 5;
+      mLabelTearFromLineThreshold = QFontMetrics( mCanvas->font() ).horizontalAdvance( 'X' ) * 5;
 
       QgsVectorLayer *vlayer = mCurrentLabel.layer;
       if ( !vlayer )
@@ -242,10 +242,10 @@ void QgsMapToolMoveLabel::cadCanvasPressEvent( QgsMapMouseEvent *e )
 
       if ( mAnchorDetached )
       {
-        mCurrentLabel.settings.placement = QgsPalLayerSettings::Placement::Horizontal;
+        mCurrentLabel.settings.placement = Qgis::LabelPlacement::Horizontal;
       }
 
-      const bool isCurvedOrLine { mCurrentLabel.settings.placement == QgsPalLayerSettings::Placement::Curved || mCurrentLabel.settings.placement == QgsPalLayerSettings::Placement::Line };
+      const bool isCurvedOrLine { mCurrentLabel.settings.placement == Qgis::LabelPlacement::Curved || mCurrentLabel.settings.placement == Qgis::LabelPlacement::Line };
 
       if ( isCurvedOrLine && !mCurrentLabel.pos.isDiagram && ! labelAnchorPercentMovable( vlayer, mCurrentLabel.settings, lineAnchorPercentCol, lineAnchorClippingCol, lineAnchorTypeCol, lineAnchorTextPointCol ) )
       {
@@ -418,7 +418,7 @@ void QgsMapToolMoveLabel::cadCanvasPressEvent( QgsMapMouseEvent *e )
         bool lineAnchorTypeSuccess = false;
         bool lineAnchorTextPointSuccess = false;
 
-        bool isCurvedOrLine { ! mAnchorDetached &&( mCurrentLabel.settings.placement == QgsPalLayerSettings::Placement::Curved || mCurrentLabel.settings.placement == QgsPalLayerSettings::Placement::Line ) };
+        bool isCurvedOrLine { ! mAnchorDetached &&( mCurrentLabel.settings.placement == Qgis::LabelPlacement::Curved || mCurrentLabel.settings.placement == Qgis::LabelPlacement::Line ) };
 
         if ( !isCalloutMove && isCurvedOrLine && !currentLabelDataDefinedLineAnchorPercent( lineAnchorPercentOrig, lineAnchorPercentSuccess, lineAnchorPercentCol,
              lineAnchorClippingOrig, lineAnchorClippingSuccess, lineAnchorClippingCol,
@@ -642,7 +642,7 @@ void QgsMapToolMoveLabel::keyReleaseEvent( QKeyEvent *e )
         // delete the stored label/callout position
         mAnchorDetached = false;
         const bool isCalloutMove = !mCurrentCallout.layerID.isEmpty();
-        const bool isCurvedOrLine { mCurrentLabel.settings.placement == QgsPalLayerSettings::Placement::Curved || mCurrentLabel.settings.placement == QgsPalLayerSettings::Placement::Line };
+        const bool isCurvedOrLine { mCurrentLabel.settings.placement == Qgis::LabelPlacement::Curved || mCurrentLabel.settings.placement == Qgis::LabelPlacement::Line };
         QgsVectorLayer *vlayer = !isCalloutMove ? mCurrentLabel.layer : qobject_cast< QgsVectorLayer * >( QgsMapTool::layer( mCurrentCallout.layerID ) );
         const QgsFeatureId featureId = !isCalloutMove ? mCurrentLabel.pos.featureId : mCurrentCallout.featureId;
         if ( vlayer )
@@ -833,9 +833,9 @@ bool QgsMapToolMoveLabel::currentCalloutDataDefinedPosition( double &x, bool &xS
   }
 
   const QgsAttributes attributes = f.attributes();
-  if ( !attributes.at( xCol ).isNull() )
+  if ( !QgsVariantUtils::isNull( attributes.at( xCol ) ) )
     x = attributes.at( xCol ).toDouble( &xSuccess );
-  if ( !attributes.at( yCol ).isNull() )
+  if ( !QgsVariantUtils::isNull( attributes.at( yCol ) ) )
     y = attributes.at( yCol ).toDouble( &ySuccess );
 
   return true;

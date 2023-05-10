@@ -22,7 +22,7 @@
 #include "qgis_app.h"
 #include "qgsgeometry.h"
 #include "qobjectuniqueptr.h"
-#include "qgssettingsentryimpl.h"
+#include "qgselevationprofilelayertreeview.h"
 
 #include <QWidgetAction>
 #include <QElapsedTimer>
@@ -42,17 +42,34 @@ class QgsPlotToolZoom;
 class QgsPlotToolXAxisZoom;
 class QgsDoubleSpinBox;
 class QgsElevationProfileWidgetSettingsAction;
-class QgsElevationProfileLayerTreeView;
 class QgsLayerTree;
 class QgsLayerTreeRegistryBridge;
+class QgsElevationProfileToolIdentify;
+class QgsElevationProfileToolMeasure;
+class QLabel;
+class QgsProfilePoint;
+class QgsSettingsEntryDouble;
+class QgsSettingsEntryBool;
+
+class QgsAppElevationProfileLayerTreeView : public QgsElevationProfileLayerTreeView
+{
+    Q_OBJECT
+  public:
+
+    explicit QgsAppElevationProfileLayerTreeView( QgsLayerTree *rootNode, QWidget *parent = nullptr );
+
+  protected:
+
+    void contextMenuEvent( QContextMenuEvent *event ) override;
+};
 
 class QgsElevationProfileWidget : public QWidget
 {
     Q_OBJECT
   public:
 
-    static const inline QgsSettingsEntryDouble settingTolerance = QgsSettingsEntryDouble( QStringLiteral( "tolerance" ), QgsSettings::Prefix::ELEVATION_PROFILE, 0.1, QStringLiteral( "Tolerance distance for elevation profile plots" ), Qgis::SettingsOptions(), 0 );
-    static const inline QgsSettingsEntryBool settingShowLayerTree = QgsSettingsEntryBool( QStringLiteral( "show-layer-tree" ), QgsSettings::Prefix::ELEVATION_PROFILE, true, QStringLiteral( "Whether the layer tree should be shown for elevation profile plots" ) );
+    static const QgsSettingsEntryDouble *settingTolerance;
+    static const QgsSettingsEntryBool *settingShowLayerTree;
 
     QgsElevationProfileWidget( const QString &name );
     ~QgsElevationProfileWidget();
@@ -64,6 +81,8 @@ class QgsElevationProfileWidget : public QWidget
 
     void setMainCanvas( QgsMapCanvas *canvas );
 
+    QgsElevationProfileCanvas *profileCanvas() { return mCanvas; }
+
     /**
      * Cancel any rendering job, in a blocking way. Used for application closing.
      */
@@ -73,11 +92,10 @@ class QgsElevationProfileWidget : public QWidget
     void toggleDockModeRequested( bool docked );
 
   private slots:
-    void populateInitialLayers();
     void updateCanvasLayers();
     void onTotalPendingJobsCountChanged( int count );
-    void setProfileCurve( const QgsGeometry &curve );
-    void onCanvasPointHovered( const QgsPointXY &point );
+    void setProfileCurve( const QgsGeometry &curve, bool resetView );
+    void onCanvasPointHovered( const QgsPointXY &point, const QgsProfilePoint &profilePoint );
     void updatePlot();
     void scheduleUpdate();
     void clear();
@@ -109,6 +127,7 @@ class QgsElevationProfileWidget : public QWidget
     QgsDockableWidgetHelper *mDockableWidgetHelper = nullptr;
     std::unique_ptr< QgsMapToolProfileCurve > mCaptureCurveMapTool;
     std::unique_ptr< QgsMapToolProfileCurveFromFeature > mCaptureCurveFromFeatureMapTool;
+    std::unique_ptr< QgsElevationProfileToolMeasure > mMeasureTool;
     QgsGeometry mProfileCurve;
 
     QObjectUniquePtr<QgsRubberBand> mMapPointRubberBand;
@@ -122,6 +141,7 @@ class QgsElevationProfileWidget : public QWidget
     QgsPlotToolPan *mPanTool = nullptr;
     QgsPlotToolXAxisZoom *mXAxisZoomTool = nullptr;
     QgsPlotToolZoom *mZoomTool = nullptr;
+    QgsElevationProfileToolIdentify *mIdentifyTool = nullptr;
 
     QgsElevationProfileWidgetSettingsAction *mSettingsAction = nullptr;
 
